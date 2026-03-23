@@ -1,0 +1,23 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Emacs
+*.elc
+*~
+\#*\#
+.emacs.d/
+auto-save-list/
+
+# Oh My Zsh framework (installed by script)
+.oh-my-zsh/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials*
+.netrc
+.npmrc
+.pypirc

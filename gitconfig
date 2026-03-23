@@ -1,0 +1,5 @@
+[user]
+	name = Troy Astorino
+	email = troy@picnichealth.com
+[core]
+	editor = emacsclient -t
