@@ -1,3 +1,8 @@
+# Fall back to xterm-256color if terminal is unknown (e.g., xterm-ghostty on remote)
+if ! infocmp "$TERM" &>/dev/null 2>&1; then
+  export TERM=xterm-256color
+fi
+
 # Path to your Oh My Zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
 

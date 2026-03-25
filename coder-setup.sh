@@ -25,7 +25,7 @@ else
 fi
 
 # --- Symlink dotfiles ---
-FILES="zshrc tmux.conf spacemacs aliases gitconfig"
+FILES="zshrc bashrc tmux.conf spacemacs aliases gitconfig"
 
 for file in $FILES; do
   target="$HOME/.$file"
