@@ -66,11 +66,17 @@ if command -v zsh &>/dev/null; then
   CURRENT_SHELL="$(basename "$SHELL")"
   if [ "$CURRENT_SHELL" != "zsh" ]; then
     ZSH_PATH="$(command -v zsh)"
-    if grep -q "$ZSH_PATH" /etc/shells 2>/dev/null; then
+    if ! grep -qx "$ZSH_PATH" /etc/shells 2>/dev/null; then
+      echo "==> Adding $ZSH_PATH to /etc/shells..."
+      if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+        echo "$ZSH_PATH" | sudo tee -a /etc/shells >/dev/null
+      else
+        echo "    (no passwordless sudo — skipping /etc/shells update and chsh)"
+      fi
+    fi
+    if grep -qx "$ZSH_PATH" /etc/shells 2>/dev/null; then
       echo "==> Setting login shell to zsh..."
       chsh -s "$ZSH_PATH" 2>/dev/null || echo "    (chsh failed — you may need to set shell manually)"
-    else
-      echo "==> zsh not in /etc/shells, skipping chsh"
     fi
   else
     echo "==> Shell already set to zsh"
