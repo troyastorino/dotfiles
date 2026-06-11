@@ -30,8 +30,10 @@ The installer is idempotent — re-run it after pulling updates. It:
 1. Symlinks the listener to `~/.local/bin/openhtml-listener` (symlink, so
    `git pull` updates it; re-running the installer restarts it)
 2. Appends the SSH forwards to `~/.ssh/config` if missing:
-   `Host coder.*` with `RemoteForward 7777` + `LocalForward 8080`
-   (appending is safe — ssh accumulates forwards from all matching blocks)
+   `Host *.coder coder.*` (both Coder alias styles, e.g.
+   `main.troy-workspace.troy.coder`) with `RemoteForward 7777` +
+   `LocalForward 8080` (appending is safe — ssh accumulates forwards from
+   all matching blocks)
 3. Installs and starts the LaunchAgent (`com.user.openhtml-listener`) so the
    listener is always running. Verify with `launchctl list | grep openhtml`.
 
