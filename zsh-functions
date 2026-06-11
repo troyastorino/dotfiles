@@ -1,0 +1,65 @@
+# Zsh functions, sourced from zshrc.
+
+# Serve an HTML file's directory with python http.server and open it in the
+# browser on your Mac. Companion to bin/openhtml — use servehtml when the page
+# has relative assets (CSS/JS/images next to the file); openhtml pushes only
+# the single file's bytes.
+#
+# Requires the Mac-side setup in macos/openhtml/README.md:
+#   - LocalForward 8080 so the Mac browser can reach the server
+#   - the openhtml-listener + RemoteForward 7777, used here to auto-open the
+#     URL (via a meta-refresh redirect page). Without it, the URL is printed
+#     for you to open manually.
+servehtml() {
+  emulate -L zsh
+  local port="${SERVEHTML_PORT:-8080}"
+  local listener_port="${OPENHTML_PORT:-7777}"
+  local file="$1"
+
+  if [[ -z "$file" ]]; then
+    echo "usage: servehtml <file.html>" >&2
+    return 1
+  fi
+  if [[ ! -f "$file" ]]; then
+    echo "servehtml: no such file: $file" >&2
+    return 1
+  fi
+
+  local dir="${file:A:h}" name="${file:A:t}"
+  local pidfile="/tmp/servehtml-$port.pid"
+  local dirfile="/tmp/servehtml-$port.dir"
+  local logfile="/tmp/servehtml-$port.log"
+
+  # Reuse the running server if it's alive, listening, and serving this
+  # directory; otherwise (re)start it.
+  local pid="" saved_dir=""
+  [[ -f "$pidfile" ]] && pid="$(<"$pidfile")"
+  [[ -f "$dirfile" ]] && saved_dir="$(<"$dirfile")"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null \
+      || [[ "$saved_dir" != "$dir" ]] || ! nc -z 127.0.0.1 "$port" 2>/dev/null; then
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+    python3 -m http.server "$port" --bind 127.0.0.1 --directory "$dir" >"$logfile" 2>&1 &!
+    pid=$!
+    print -r -- "$pid" >"$pidfile"
+    print -r -- "$dir" >"$dirfile"
+    local i
+    for i in {1..20}; do
+      nc -z 127.0.0.1 "$port" 2>/dev/null && break
+      if ! kill -0 "$pid" 2>/dev/null; then
+        echo "servehtml: server failed to start on port $port (see $logfile)" >&2
+        return 1
+      fi
+      sleep 0.1
+    done
+  fi
+
+  local url="http://localhost:$port/$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$name")"
+  # Auto-open on the Mac by sending a redirect page to the openhtml listener.
+  if print -r -- "<meta http-equiv=\"refresh\" content=\"0;url=$url\">" \
+      | nc -N -w 5 127.0.0.1 "$listener_port" 2>/dev/null; then
+    echo "serving $dir — opened $url on your Mac"
+  else
+    echo "serving $dir"
+    echo "couldn't reach the Mac listener on port $listener_port — open $url in your Mac browser"
+  fi
+}

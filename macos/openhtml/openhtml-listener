@@ -1,0 +1,39 @@
+#!/bin/bash
+# openhtml listener — runs on the Mac.
+#
+# Accepts one HTML document per TCP connection on 127.0.0.1:7777 (reached from
+# a Coder workspace via an SSH RemoteForward), saves it under ~/.cache/openhtml,
+# and opens it in a browser. Pairs with the `openhtml` command in the dotfiles
+# bin/ directory. Setup: see README.md next to this file.
+
+PORT="${OPENHTML_PORT:-7777}"
+APP="${OPENHTML_APP:-}"  # e.g. "Google Chrome" or "Safari"; empty = default browser
+DIR="$HOME/.cache/openhtml"
+mkdir -p "$DIR"
+
+# Keep only the 50 most recent received files
+cleanup() {
+  ls -t "$DIR"/*.html 2>/dev/null | tail -n +51 | while IFS= read -r old; do
+    rm -f "$old"
+  done
+}
+
+while true; do
+  f="$DIR/$(date +%Y%m%d-%H%M%S)-$RANDOM.html"
+  if ! /usr/bin/nc -l 127.0.0.1 "$PORT" > "$f"; then
+    # Port in use or other bind error — don't spin
+    rm -f "$f"
+    sleep 2
+    continue
+  fi
+  if [ -s "$f" ]; then
+    if [ -n "$APP" ]; then
+      open -a "$APP" "$f"
+    else
+      open "$f"
+    fi
+    cleanup
+  else
+    rm -f "$f"
+  fi
+done

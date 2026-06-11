@@ -23,6 +23,9 @@ export EDITOR='emacsclient -t'
 # Source aliases if present
 [ -f ~/.aliases ] && source ~/.aliases
 
+# Source zsh functions from the dotfiles repo
+[ -f ~/.dotfiles/zsh-functions ] && source ~/.dotfiles/zsh-functions
+
 # Conditionally load pyenv if installed
 if command -v pyenv &>/dev/null; then
   eval "$(pyenv init -)"
@@ -32,4 +35,4 @@ fi
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.dotfiles/bin:$PATH"

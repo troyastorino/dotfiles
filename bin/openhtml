@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Open an HTML file from this workspace in the browser on your Mac.
+#
+# Sends the file over the reverse SSH tunnel (RemoteForward) on port 7777 to
+# the openhtml-listener running on the Mac, which saves it to a temp file and
+# runs `open` on it. One-time Mac setup: see macos/openhtml/README.md in the
+# dotfiles repo.
+set -euo pipefail
+
+PORT="${OPENHTML_PORT:-7777}"
+file="${1:?usage: openhtml <file.html>}"
+
+if [ ! -f "$file" ]; then
+  echo "openhtml: no such file: $file" >&2
+  exit 1
+fi
+
+if ! nc -N -w 10 127.0.0.1 "$PORT" < "$file"; then
+  cat >&2 <<EOF
+openhtml: could not reach the Mac listener on 127.0.0.1:$PORT.
+Check that:
+  1. openhtml-listener is running on your Mac (launchctl list | grep openhtml)
+  2. your SSH connection was started with the RemoteForward for port $PORT
+     (it's in ~/.ssh/config on the Mac — reconnect if you added it after connecting)
+Setup instructions: macos/openhtml/README.md in the dotfiles repo.
+EOF
+  exit 1
+fi
