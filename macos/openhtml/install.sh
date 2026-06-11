@@ -27,19 +27,26 @@ mkdir -p "$HOME/.ssh"
 touch "$SSH_CONFIG"
 # Both Coder alias styles: <agent>.<workspace>.<owner>.coder and coder.<ws>
 HOST_PATTERN='*.coder coder.*'
+MARKER='added by dotfiles macos/openhtml/install.sh'
 if grep -q "RemoteForward 7777" "$SSH_CONFIG"; then
-  if grep -q '^Host \*\.coder' "$SSH_CONFIG"; then
+  # Check the Host line of OUR block (the line right after the marker
+  # comment) — the Coder-managed block elsewhere in the file may also start
+  # with 'Host *.coder', so a whole-file grep would false-positive.
+  if grep -A1 "$MARKER" "$SSH_CONFIG" | grep -q '^Host \*\.coder'; then
     echo "==> SSH forwards already present in ~/.ssh/config"
-  else
+  elif grep -q "$MARKER" "$SSH_CONFIG"; then
     # Migrate a block written by an older install.sh whose Host pattern
     # (coder.*) missed <agent>.<ws>.<owner>.coder style aliases.
     sed -i '' \
-      -e '/added by dotfiles macos\/openhtml\/install.sh/{' \
+      -e "/$(printf '%s' "$MARKER" | sed 's|/|\\/|g')/{" \
       -e 'n' \
       -e "s/^Host .*/Host $HOST_PATTERN/" \
       -e '}' \
       "$SSH_CONFIG"
     echo "==> Updated SSH config Host pattern to '$HOST_PATTERN'"
+  else
+    echo "==> RemoteForward 7777 exists in ~/.ssh/config but wasn't added by"
+    echo "    this installer — make sure its Host pattern covers: $HOST_PATTERN"
   fi
 else
   cat >>"$SSH_CONFIG" <<EOF
