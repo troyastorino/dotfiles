@@ -18,50 +18,26 @@ servehtml: http.server on workspace:8080 <─(LocalForward)─ Mac browser
 
 ## One-time Mac setup
 
-Run these **on your Mac** (not in the workspace). Assumes this repo is cloned
-at `~/dot-files` on the Mac.
-
-### 1. Link the listener into PATH
+On the Mac, clone (or pull) this repo and run the installer:
 
 ```sh
-cd ~/dot-files && git pull
-mkdir -p ~/.local/bin
-ln -sf ~/dot-files/macos/openhtml/openhtml-listener ~/.local/bin/openhtml-listener
+git clone https://github.com/troyastorino/dotfiles ~/dotfiles  # or: cd ~/dotfiles && git pull
+~/dotfiles/macos/openhtml/install.sh
 ```
 
-(Symlinked rather than copied, so future `git pull`s update the listener —
-launchd restarts it automatically if it exits, but after a pull you can
-`launchctl kickstart -k gui/$(id -u)/com.user.openhtml-listener` to pick up
-changes immediately.)
+The installer is idempotent — re-run it after pulling updates. It:
 
-### 2. Add the tunnels to your SSH config
+1. Symlinks the listener to `~/.local/bin/openhtml-listener` (symlink, so
+   `git pull` updates it; re-running the installer restarts it)
+2. Appends the SSH forwards to `~/.ssh/config` if missing:
+   `Host coder.*` with `RemoteForward 7777` + `LocalForward 8080`
+   (appending is safe — ssh accumulates forwards from all matching blocks)
+3. Installs and starts the LaunchAgent (`com.user.openhtml-listener`) so the
+   listener is always running. Verify with `launchctl list | grep openhtml`.
 
-Add this **above** the Coder-managed block in `~/.ssh/config` on the Mac
-(`coder config-ssh` rewrites its own block, so keep this outside it):
+Then **reconnect SSH** — forwards only apply to new connections.
 
-```
-Host coder.*
-  RemoteForward 7777 127.0.0.1:7777
-  LocalForward 8080 127.0.0.1:8080
-```
-
-The forwards only take effect on new connections, so reconnect after adding
-them.
-
-### 3. Install the listener as a LaunchAgent (so it's always running)
-
-```sh
-sed "s|__HOME__|$HOME|g" ~/dot-files/macos/openhtml/com.user.openhtml-listener.plist \
-  > ~/Library/LaunchAgents/com.user.openhtml-listener.plist
-launchctl load ~/Library/LaunchAgents/com.user.openhtml-listener.plist
-```
-
-To verify it's running: `launchctl list | grep openhtml`.
-
-(Alternative for a quick test without launchd: just run
-`~/.local/bin/openhtml-listener` in a spare Mac terminal tab.)
-
-### 4. Test
+### Test
 
 From any tmux pane in the workspace (after reconnecting SSH):
 
