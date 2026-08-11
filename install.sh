@@ -86,9 +86,12 @@ fi
 # --- Warn when claude.ai personal preferences are stale ---
 # Chat, mobile, and Desktop-in-Chat read no local files, so the writing rules
 # reach them only by paste. Compare hashes and say so when they drift.
-if [ -f "$DOTFILES_DIR/claude/rules/writing.md" ] && command -v python3 &>/dev/null; then
-  rules_hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' \
-    "$DOTFILES_DIR/claude/rules/writing.md")"
+# sha256sum on Linux, shasum on the Mac.
+sha256() {
+  if command -v sha256sum &>/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+}
+if [ -f "$DOTFILES_DIR/claude/rules/writing.md" ]; then
+  rules_hash="$(sha256 "$DOTFILES_DIR/claude/rules/writing.md")"
   synced_hash=""
   [ -f "$DOTFILES_DIR/claude/.prefs-synced" ] && synced_hash="$(cat "$DOTFILES_DIR/claude/.prefs-synced")"
   if [ "$rules_hash" != "$synced_hash" ]; then
