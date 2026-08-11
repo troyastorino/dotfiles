@@ -51,6 +51,52 @@ for file in $FILES; do
   echo "    Linked $target -> $source"
 done
 
+# --- Symlink Claude Code user-level rules ---
+# ~/.claude/rules/*.md load in every project on this machine. Symlinked, not
+# copied, so `git pull` updates them.
+if [ -d "$DOTFILES_DIR/claude/rules" ]; then
+  echo "==> Linking Claude Code rules..."
+  mkdir -p "$HOME/.claude/rules"
+  for rule in "$DOTFILES_DIR"/claude/rules/*.md; do
+    [ -f "$rule" ] || continue
+    target="$HOME/.claude/rules/$(basename "$rule")"
+    if [ -f "$target" ] && [ ! -L "$target" ]; then
+      echo "    Backing up $target -> ${target}.backup"
+      mv "$target" "${target}.backup"
+    fi
+    ln -sf "$rule" "$target"
+    echo "    Linked $target -> $rule"
+  done
+fi
+
+# --- Merge Claude Code user settings ---
+# Not a symlink: Claude Code writes /model, /effort, /advisor and /config
+# choices into ~/.claude/settings.json too. Merging keeps those and still
+# applies the keys declared in claude/settings.json.
+if [ -f "$DOTFILES_DIR/claude/settings.json" ]; then
+  echo "==> Merging Claude Code settings..."
+  if command -v python3 &>/dev/null; then
+    python3 "$DOTFILES_DIR/claude/merge-settings.py" \
+      "$DOTFILES_DIR/claude/settings.json" "$HOME/.claude/settings.json"
+  else
+    echo "    Skipping (needs python3)"
+  fi
+fi
+
+# --- Warn when claude.ai personal preferences are stale ---
+# Chat, mobile, and Desktop-in-Chat read no local files, so the writing rules
+# reach them only by paste. Compare hashes and say so when they drift.
+if [ -f "$DOTFILES_DIR/claude/rules/writing.md" ] && command -v python3 &>/dev/null; then
+  rules_hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' \
+    "$DOTFILES_DIR/claude/rules/writing.md")"
+  synced_hash=""
+  [ -f "$DOTFILES_DIR/claude/.prefs-synced" ] && synced_hash="$(cat "$DOTFILES_DIR/claude/.prefs-synced")"
+  if [ "$rules_hash" != "$synced_hash" ]; then
+    echo "==> Heads up: rules/writing.md differs from what was last pasted into"
+    echo "    claude.ai personal preferences. Run: $DOTFILES_DIR/claude/sync-prefs.sh"
+  fi
+fi
+
 # --- Start emacs daemon ---
 if command -v emacs &>/dev/null; then
   if ! emacsclient -e '(+ 1 1)' &>/dev/null 2>&1; then
