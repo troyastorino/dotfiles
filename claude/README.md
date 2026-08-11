@@ -47,7 +47,7 @@ project's `.claude/settings.json` instead of replacing it.
 ```sh
 ~/.dotfiles/install.sh      # ~/dotfiles/install.sh on the Mac
 ls -l ~/.claude/rules/
-python3 -c 'import json;print(json.load(open("$HOME/.claude/settings.json")))'
+python3 -m json.tool ~/.claude/settings.json
 ```
 
 Then start a session and run `/context`. `writing.md` appears under **Memory files**.

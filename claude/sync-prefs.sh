@@ -16,7 +16,13 @@ STAMP="$DIR/.prefs-synced"
 
 [ -f "$RULES" ] || { echo "sync-prefs: missing $RULES" >&2; exit 1; }
 
-hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$RULES")"
+# sha256sum on Linux, shasum on the Mac. Must match the sha256 in install.sh,
+# which compares this stamp against the current rules.
+if command -v sha256sum >/dev/null 2>&1; then
+  hash="$(sha256sum "$RULES" | cut -d' ' -f1)"
+else
+  hash="$(shasum -a 256 "$RULES" | cut -d' ' -f1)"
+fi
 
 if command -v pbcopy >/dev/null 2>&1; then
   pbcopy <"$RULES"; copied="clipboard (pbcopy)"
