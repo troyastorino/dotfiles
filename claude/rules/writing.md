@@ -5,15 +5,6 @@
 They govern how **you** write: replies to me, and the documents, reports, commit messages,
 PR bodies, and code comments you produce as yourself.
 
-They do **not** govern ghostwriting. Some output goes out under my name: an email, a Slack
-message, a doc or knowledge page authored as me. Write those in my voice, or in the voice I
-ask for. In the Picnic knowledge repo the provenance stamp is the line:
-`authored-by: claude (directed by troy)` is your writing; a `draft/*` page published as me
-is not.
-
-PicnicHealth's org instructions set voice: contractions, parenthetical asides, banned
-phrases. These rules add structure underneath. Where the two clash, the org rules win.
-
 ## Structure: ASD-STE100
 
 - One idea per sentence. One instruction per sentence.
