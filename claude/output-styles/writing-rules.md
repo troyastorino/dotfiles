@@ -1,9 +1,18 @@
+---
+name: Writing rules
+description: ASD-STE100 structure and Orwell word choice for everything Claude writes
+keep-coding-instructions: true
+---
+
 # Writing rules
 
 ## When these apply
 
 They govern how **you** write: replies to me, and the documents, reports, commit messages,
 PR bodies, and code comments you produce as yourself.
+
+They outrank `docs/conventions/prose-conventions.md` in the picnic repo. That file is
+longer, and it covers the same topic. Where the two differ, follow this file.
 
 ## Structure: ASD-STE100
 
