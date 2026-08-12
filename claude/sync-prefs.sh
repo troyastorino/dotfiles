@@ -11,17 +11,20 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-RULES="$DIR/rules/writing.md"
 STAMP="$DIR/.prefs-synced"
 
-[ -f "$RULES" ] || { echo "sync-prefs: missing $RULES" >&2; exit 1; }
+# The output style carries YAML frontmatter. claude.ai wants the rules alone, so
+# both the paste and the hash use the body.
+RULES="$(mktemp)"
+trap 'rm -f "$RULES"' EXIT
+"$DIR/rules-body.sh" >"$RULES"
 
 # sha256sum on Linux, shasum on the Mac. Must match the sha256 in install.sh,
 # which compares this stamp against the current rules.
 if command -v sha256sum >/dev/null 2>&1; then
-  hash="$(sha256sum "$RULES" | cut -d' ' -f1)"
+  hash="$(sha256sum <"$RULES" | cut -d' ' -f1)"
 else
-  hash="$(shasum -a 256 "$RULES" | cut -d' ' -f1)"
+  hash="$(shasum -a 256 <"$RULES" | cut -d' ' -f1)"
 fi
 
 if command -v pbcopy >/dev/null 2>&1; then
@@ -35,7 +38,7 @@ else
 fi
 
 if [ -n "$copied" ]; then
-  echo "==> Copied rules/writing.md to your $copied"
+  echo "==> Copied the writing rules to your $copied"
 else
   echo "==> No clipboard tool found. The text to paste:"
   echo

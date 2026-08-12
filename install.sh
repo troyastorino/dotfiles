@@ -51,22 +51,33 @@ for file in $FILES; do
   echo "    Linked $target -> $source"
 done
 
-# --- Symlink Claude Code user-level rules ---
-# ~/.claude/rules/*.md load in every project on this machine. Symlinked, not
-# copied, so `git pull` updates them.
-if [ -d "$DOTFILES_DIR/claude/rules" ]; then
-  echo "==> Linking Claude Code rules..."
-  mkdir -p "$HOME/.claude/rules"
-  for rule in "$DOTFILES_DIR"/claude/rules/*.md; do
-    [ -f "$rule" ] || continue
-    target="$HOME/.claude/rules/$(basename "$rule")"
+# --- Symlink Claude Code output styles ---
+# ~/.claude/output-styles/*.md reach the system prompt. A rules file reaches a
+# user message instead, which loses to the larger repo instructions alongside
+# it. claude/README.md explains the difference. Symlinked, not copied, so
+# `git pull` updates them.
+if [ -d "$DOTFILES_DIR/claude/output-styles" ]; then
+  echo "==> Linking Claude Code output styles..."
+  mkdir -p "$HOME/.claude/output-styles"
+  for style in "$DOTFILES_DIR"/claude/output-styles/*.md; do
+    [ -f "$style" ] || continue
+    target="$HOME/.claude/output-styles/$(basename "$style")"
     if [ -f "$target" ] && [ ! -L "$target" ]; then
       echo "    Backing up $target -> ${target}.backup"
       mv "$target" "${target}.backup"
     fi
-    ln -sf "$rule" "$target"
-    echo "    Linked $target -> $rule"
+    ln -sf "$style" "$target"
+    echo "    Linked $target -> $style"
   done
+fi
+
+# --- Drop the rules symlink earlier versions installed ---
+# The writing rules moved to claude/output-styles/. A machine that ran the old
+# install.sh still holds a symlink to the file that moved, and it now resolves
+# to nothing.
+if [ -L "$HOME/.claude/rules/writing.md" ] && [ ! -e "$HOME/.claude/rules/writing.md" ]; then
+  rm "$HOME/.claude/rules/writing.md"
+  echo "==> Removed the stale ~/.claude/rules/writing.md symlink"
 fi
 
 # --- Merge Claude Code user settings ---
@@ -88,14 +99,14 @@ fi
 # reach them only by paste. Compare hashes and say so when they drift.
 # sha256sum on Linux, shasum on the Mac.
 sha256() {
-  if command -v sha256sum &>/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+  if command -v sha256sum &>/dev/null; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1
 }
-if [ -f "$DOTFILES_DIR/claude/rules/writing.md" ]; then
-  rules_hash="$(sha256 "$DOTFILES_DIR/claude/rules/writing.md")"
+if [ -x "$DOTFILES_DIR/claude/rules-body.sh" ]; then
+  rules_hash="$("$DOTFILES_DIR/claude/rules-body.sh" | sha256)"
   synced_hash=""
   [ -f "$DOTFILES_DIR/claude/.prefs-synced" ] && synced_hash="$(cat "$DOTFILES_DIR/claude/.prefs-synced")"
   if [ "$rules_hash" != "$synced_hash" ]; then
-    echo "==> Heads up: rules/writing.md differs from what was last pasted into"
+    echo "==> Heads up: the writing rules differ from what was last pasted into"
     echo "    claude.ai personal preferences. Run: $DOTFILES_DIR/claude/sync-prefs.sh"
   fi
 fi
