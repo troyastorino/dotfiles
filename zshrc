@@ -36,3 +36,7 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
 export PATH="$HOME/.local/bin:$HOME/.dotfiles/bin:$PATH"
+
+# Picnic Coder workspaces write ~/.picnicrc. The stock zshrc there sources it;
+# this file replaces that zshrc, so source it here too.
+[ -f "$HOME/.picnicrc" ] && source "$HOME/.picnicrc"
