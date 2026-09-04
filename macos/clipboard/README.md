@@ -26,9 +26,9 @@ Ctrl+V in Claude Code ─> bin/xclip ─> 127.0.0.1:7778 ─(RemoteForward)─> 
 ```
 
 `clipboard-listener` is a small Python script. launchd keeps it running on the Mac. For each
-connection it reads one line, `png`, and replies with the PNG bytes. An empty reply means
-the clipboard holds no image. The AppleScript it runs is the one Claude Code itself runs on
-a Mac.
+connection it reads one line, `png`, and replies with the PNG bytes, or with the line `none`
+when the clipboard holds no image. The AppleScript it runs is the one Claude Code itself
+runs on a Mac.
 
 If a display is set (`DISPLAY` or `WAYLAND_DISPLAY`), `bin/xclip` hands off to the next
 `xclip` on PATH instead.
@@ -76,7 +76,11 @@ Then press Ctrl+V in a Claude Code session.
 ## Troubleshooting
 
 - **Nothing happens on Ctrl+V.** Claude Code discards `xclip`'s stderr. Run the `TARGETS`
-  command above by hand in a pane. It prints a hint when it cannot reach the listener.
+  command above by hand in a pane. It exits 1 silently when the Mac clipboard holds no
+  image. It prints a hint in the two other cases: the SSH forward is missing, so nothing
+  listens on the workspace port, or the forward is up but the Mac listener did not answer.
+  The second case also means an old listener: after `git pull` on the Mac, re-run
+  `install.sh` to restart it.
 - **Listener log**: `~/.cache/clipboard/listener.log` on the Mac. The line
   `no image on the clipboard (... -1700)` is the normal case when the clipboard holds text.
 - **Clipboard privacy prompts.** Recent macOS versions can ask before a program reads the

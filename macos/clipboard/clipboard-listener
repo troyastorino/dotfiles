@@ -4,8 +4,9 @@
 Runs on the Mac as a LaunchAgent. Listens on 127.0.0.1:7778, which a Coder
 workspace reaches through an SSH RemoteForward. One request per connection:
 the client sends the line "png"; the listener replies with the clipboard
-image as PNG bytes and closes. An empty reply means the clipboard holds no
-image. Pairs with bin/xclip in the dotfiles repo. Setup: README.md next to
+image as PNG bytes and closes, or with the line "none" when the clipboard
+holds no image. An empty reply therefore means no listener answered. Pairs
+with bin/xclip in the dotfiles repo. Setup: README.md next to
 this file.
 """
 import os
@@ -67,6 +68,7 @@ class Handler(socketserver.StreamRequestHandler):
             return
         data = clipboard_png()
         if data is None:
+            self.wfile.write(b"none\n")
             return
         # sendall's timeout covers the whole transfer; allow for a slow link.
         self.connection.settimeout(120)

@@ -72,10 +72,24 @@ HINT
   exit 1
 fi
 
-# An empty reply means the Mac clipboard holds no image. Anything else must
-# start with the PNG signature.
+# The listener replies "none" when the Mac clipboard holds no image, and PNG
+# bytes otherwise. An empty reply means the tunnel connected but nothing
+# answered on the Mac.
+if [ ! -s "$tmp" ]; then
+  cat >&2 <<HINT
+xclip: connected to 127.0.0.1:$PORT but got no reply. The SSH forward is up, but
+nothing answered on the Mac. Check there that clipboard-listener is running
+(launchctl list | grep clipboard) and read ~/.cache/clipboard/listener.log.
+After pulling repo updates, re-run macos/clipboard/install.sh to restart it.
+HINT
+  exit 1
+fi
+if [ "$(head -c 4 "$tmp")" = "none" ]; then
+  exit 1
+fi
 magic="$(head -c 8 "$tmp" | od -An -tx1 | tr -d ' \n')"
 if [ "$magic" != "89504e470d0a1a0a" ]; then
+  echo "xclip: unexpected reply from the Mac listener (not PNG, not 'none')" >&2
   exit 1
 fi
 
