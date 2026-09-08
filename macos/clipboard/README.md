@@ -43,7 +43,10 @@ git clone https://github.com/troyastorino/dotfiles ~/dotfiles  # or: cd ~/dotfil
 ~/dotfiles/macos/clipboard/install.sh
 ```
 
-The installer is idempotent. Re-run it after pulling updates. It:
+The installer is idempotent. You rarely need to run it by hand: on the Mac, every new
+interactive shell runs `dotfiles-mac-check` (in `zsh-functions`), which runs the installer
+when the listener link, the SSH forward, or the LaunchAgent is missing, or when a file in
+this directory changed since the last install. Open a new terminal after `git pull`. It:
 
 1. Symlinks the listener to `~/.local/bin/clipboard-listener`, so `git pull` updates it.
    Re-running the installer restarts it.

@@ -69,12 +69,21 @@ launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 echo "==> Listener installed and running"
 
-if launchctl list | grep -q "$LABEL"; then
+# launchctl load returns before the job shows up in the list; give it a moment.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl list "$LABEL" >/dev/null 2>&1 && break
+  sleep 0.2
+done
+if launchctl list "$LABEL" >/dev/null 2>&1; then
   echo "==> Verified: $LABEL is loaded"
 else
   echo "WARNING: $LABEL did not load — check $HOME/.cache/openhtml/listener.log" >&2
   exit 1
 fi
+
+# Stamp for the startup check in zsh-functions (dotfiles-mac-check): files in
+# this directory newer than the stamp mean the install is stale.
+touch "$HOME/.cache/openhtml/installed"
 
 echo
 echo "Done. Reconnect SSH (forwards only apply to new connections), then test"

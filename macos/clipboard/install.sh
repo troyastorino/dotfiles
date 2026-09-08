@@ -69,6 +69,10 @@ else
   exit 1
 fi
 
+# Stamp for the startup check in zsh-functions (dotfiles-mac-check): files in
+# this directory newer than the stamp mean the install is stale.
+touch "$HOME/.cache/clipboard/installed"
+
 echo
 echo "Done. Check the listener here on the Mac first (copy a screenshot, then):"
 printf '%s\n' "  printf 'png\\n' | nc 127.0.0.1 $PORT > /tmp/clip.png && open /tmp/clip.png"
