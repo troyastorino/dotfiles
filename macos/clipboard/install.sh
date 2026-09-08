@@ -55,7 +55,14 @@ launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 echo "==> Listener installed and running"
 
-if launchctl list | grep -q "$LABEL"; then
+# A check right after launchctl load once reported the job missing while it
+# was in fact loaded, so poll for a few seconds instead of checking once.
+loaded=false
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if launchctl list | grep -q "$LABEL"; then loaded=true; break; fi
+  sleep 0.5
+done
+if $loaded; then
   echo "==> Verified: $LABEL is loaded"
 else
   echo "WARNING: $LABEL did not load. Check $HOME/.cache/clipboard/listener.log" >&2
