@@ -21,3 +21,6 @@ credentials*
 .netrc
 .npmrc
 .pypirc
+
+# Python
+__pycache__/

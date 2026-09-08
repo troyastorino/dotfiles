@@ -63,3 +63,52 @@ servehtml() {
     echo "couldn't reach the Mac listener on port $listener_port — open $url in your Mac browser"
   fi
 }
+
+# Keep the Mac side of the Coder bridges (macos/*) installed and current.
+# zshrc calls this from every interactive shell on the Mac. Each bridge needs
+# three things on the Mac: the listener linked into ~/.local/bin, a
+# RemoteForward in ~/.ssh/config, and a loaded LaunchAgent. Any of them can
+# go missing on a fresh machine, and a listener keeps running old code after
+# `git pull` until it is restarted. The installer fixes all of that and is
+# idempotent, so run it when a check fails or when a file in the bridge's
+# directory is newer than the stamp the installer leaves. Silent otherwise.
+dotfiles-mac-check() {
+  emulate -L zsh
+  setopt extended_glob
+  [[ "$OSTYPE" == darwin* ]] || return 0
+  local root="${DOTFILES_DIR:-$HOME/dotfiles}"
+  # This runs on every shell start, so avoid forks: read the SSH config with
+  # $(<file), which zsh does in-process, and call launchctl once for all
+  # bridges. That one call is most of the cost (about 15 ms).
+  local sshcfg="" jobs=""
+  [[ -f "$HOME/.ssh/config" ]] && sshcfg="$(<"$HOME/.ssh/config")"
+  jobs="$(launchctl list 2>/dev/null)"
+  local tool dir stamp reason f
+  for tool in clipboard openhtml; do
+    dir="$root/macos/$tool"
+    [[ -x "$dir/install.sh" ]] || continue
+    stamp="$HOME/.cache/$tool/installed"
+    reason=""
+    if [[ ! -e "$HOME/.local/bin/$tool-listener" ]]; then
+      reason="~/.local/bin/$tool-listener is missing"
+    elif [[ "$sshcfg" != *"macos/$tool/install.sh"* ]]; then
+      reason="the SSH forward is not in ~/.ssh/config"
+    elif [[ "$jobs" != *"com.user.$tool-listener"* ]]; then
+      reason="the LaunchAgent is not loaded"
+    elif [[ ! -f "$stamp" ]]; then
+      reason="no record of an install"
+    else
+      for f in "$dir"/*(N.); do
+        if [[ "$f" -nt "$stamp" ]]; then
+          reason="${f:t} changed since the last install"
+          break
+        fi
+      done
+    fi
+    [[ -n "$reason" ]] || continue
+    echo "dotfiles: $tool bridge: $reason. Running $dir/install.sh"
+    if ! "$dir/install.sh"; then
+      echo "dotfiles: $tool install failed. See $dir/README.md" >&2
+    fi
+  done
+}

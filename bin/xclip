@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# xclip stand-in for a headless Coder workspace. Answers Claude Code's
+# image-paste calls with the Mac clipboard.
+#
+# On Linux, Claude Code reads a pasted image (Ctrl+V) by running xclip:
+#   xclip -selection clipboard -t TARGETS -o     is there an image?
+#   xclip -selection clipboard -t image/png -o   dump it as PNG
+# The workspace has no X display, so the real xclip cannot work here. This
+# script answers those two calls instead. It asks the clipboard-listener on
+# the Mac, through the reverse SSH tunnel (RemoteForward) on port 7778, for
+# the Mac clipboard as PNG. One-time Mac setup: macos/clipboard/README.md in
+# the dotfiles repo.
+#
+# When a display is set, the script hands off to the next xclip on PATH.
+set -euo pipefail
+
+PORT="${CLIPBOARD_PORT:-7778}"
+
+# --- With a display, defer to a real xclip ---
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  while IFS= read -r candidate; do
+    [ "$candidate" -ef "$0" ] && continue
+    exec "$candidate" "$@"
+  done < <(type -aP xclip)
+  echo "xclip: a display is set but no real xclip is installed" >&2
+  exit 1
+fi
+
+# --- Parse the subset of xclip options Claude Code uses ---
+mode=out
+target=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|-out) mode=out ;;
+    -i|-in) mode=in ;;
+    -t|-target) target="${2:-}"; shift ;;
+    -selection|-sel|-d|-display|-l|-loops) shift ;;
+    -h|-help)
+      echo "usage: xclip -selection clipboard -t {TARGETS|image/png} -o" >&2
+      echo "This xclip bridges to the Mac clipboard. See macos/clipboard/README.md." >&2
+      exit 0 ;;
+    *) ;;
+  esac
+  shift
+done
+
+if [ "$mode" = in ]; then
+  echo "xclip: this bridge reads the Mac clipboard; it cannot write to it" >&2
+  exit 1
+fi
+
+case "$target" in
+  TARGETS|image/png) ;;
+  *)
+    echo "xclip: target '${target:-<none>}' is not bridged; only TARGETS and image/png are" >&2
+    exit 1 ;;
+esac
+
+# --- Fetch the clipboard image from the Mac ---
+tmp="$(mktemp "${TMPDIR:-/tmp}/xclip-bridge.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+# No -N here: nc -N half-closes the socket as soon as stdin hits EOF, and the
+# Coder agent tears down the whole forwarded channel on that EOF, before the
+# listener's reply arrives. Without -N, nc keeps the socket open and exits
+# when the listener closes it after replying.
+if ! printf 'png\n' | nc -w 15 127.0.0.1 "$PORT" > "$tmp"; then
+  cat >&2 <<HINT
+xclip: could not reach the Mac clipboard listener on 127.0.0.1:$PORT.
+Check that:
+  1. clipboard-listener is running on your Mac (launchctl list | grep clipboard)
+  2. your SSH connection was started with the RemoteForward for port $PORT
+     (it's in ~/.ssh/config on the Mac; reconnect if you added it after connecting)
+Setup instructions: macos/clipboard/README.md in the dotfiles repo.
+HINT
+  exit 1
+fi
+
+# The listener replies "none" when the Mac clipboard holds no image, and PNG
+# bytes otherwise. An empty reply means the tunnel connected but nothing
+# answered on the Mac.
+if [ ! -s "$tmp" ]; then
+  cat >&2 <<HINT
+xclip: connected to 127.0.0.1:$PORT but got no reply. The SSH forward is up, but
+nothing answered on the Mac. Check there that clipboard-listener is running
+(launchctl list | grep clipboard) and read ~/.cache/clipboard/listener.log.
+After pulling repo updates, re-run macos/clipboard/install.sh to restart it.
+HINT
+  exit 1
+fi
+if [ "$(head -c 4 "$tmp")" = "none" ]; then
+  exit 1
+fi
+magic="$(head -c 8 "$tmp" | od -An -tx1 | tr -d ' \n')"
+if [ "$magic" != "89504e470d0a1a0a" ]; then
+  echo "xclip: unexpected reply from the Mac listener (not PNG, not 'none')" >&2
+  exit 1
+fi
+
+case "$target" in
+  TARGETS) echo "image/png" ;;
+  image/png) cat "$tmp" ;;
+esac

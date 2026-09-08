@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+"""clipboard-listener: serves the Mac clipboard image to a Coder workspace.
+
+Runs on the Mac as a LaunchAgent. Listens on 127.0.0.1:7778, which a Coder
+workspace reaches through an SSH RemoteForward. One request per connection:
+the client sends the line "png"; the listener replies with the clipboard
+image as PNG bytes and closes, or with the line "none" when the clipboard
+holds no image. An empty reply therefore means no listener answered. Pairs
+with bin/xclip in the dotfiles repo. Setup: README.md next to
+this file.
+"""
+import os
+import socketserver
+import subprocess
+import sys
+import tempfile
+import time
+
+PORT = int(os.environ.get("CLIPBOARD_PORT", "7778"))
+
+
+def log(msg):
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, file=sys.stderr, flush=True)
+
+
+def clipboard_png():
+    """Return the clipboard image as PNG bytes, or None when there is none.
+
+    This is the AppleScript Claude Code itself runs on a Mac: coerce the
+    clipboard to PNG and write it to a file. The coercion fails when the
+    clipboard holds no image, and osascript then exits non-zero.
+    """
+    fd, path = tempfile.mkstemp(prefix="clipboard-", suffix=".png")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e", "set png_data to (the clipboard as «class PNGf»)",
+                "-e", f'set fp to open for access POSIX file "{path}" with write permission',
+                "-e", "write png_data to fp",
+                "-e", "close access fp",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            reason = result.stderr.decode("utf-8", "replace").strip().splitlines()
+            log(f"png: no image on the clipboard ({reason[0] if reason else 'osascript failed'})")
+            return None
+        with open(path, "rb") as f:
+            return f.read() or None
+    finally:
+        os.unlink(path)
+
+
+class Handler(socketserver.StreamRequestHandler):
+    timeout = 10  # seconds the client gets to send its request line
+
+    def handle(self):
+        try:
+            request = self.rfile.readline(64).strip()
+        except OSError as e:
+            log(f"request read failed: {e}")
+            return
+        if request != b"png":
+            log(f"ignored request {request!r}")
+            return
+        data = clipboard_png()
+        if data is None:
+            self.wfile.write(b"none\n")
+            return
+        # sendall's timeout covers the whole transfer; allow for a slow link.
+        self.connection.settimeout(120)
+        try:
+            self.wfile.write(data)
+        except OSError as e:
+            log(f"png: send of {len(data)} bytes failed: {e}")
+            return
+        log(f"png: sent {len(data)} bytes")
+
+
+class Server(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+def main():
+    try:
+        server = Server(("127.0.0.1", PORT), Handler)
+    except OSError as e:
+        log(f"cannot listen on 127.0.0.1:{PORT}: {e}")
+        sys.exit(1)
+    log(f"listening on 127.0.0.1:{PORT}")
+    with server:
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -25,7 +25,9 @@ git clone https://github.com/troyastorino/dotfiles ~/dotfiles  # or: cd ~/dotfil
 ~/dotfiles/macos/openhtml/install.sh
 ```
 
-The installer is idempotent — re-run it after pulling updates. It:
+The installer is idempotent. You rarely need to run it by hand: on the Mac, every new
+interactive shell runs `dotfiles-mac-check` (in `zsh-functions`), which runs the installer
+when something is missing or a file in this directory changed since the last install. It:
 
 1. Symlinks the listener to `~/.local/bin/openhtml-listener` (symlink, so
    `git pull` updates it; re-running the installer restarts it)
