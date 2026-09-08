@@ -60,7 +60,11 @@ esac
 tmp="$(mktemp "${TMPDIR:-/tmp}/xclip-bridge.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
-if ! printf 'png\n' | nc -N -w 15 127.0.0.1 "$PORT" > "$tmp"; then
+# No -N here: nc -N half-closes the socket as soon as stdin hits EOF, and the
+# Coder agent tears down the whole forwarded channel on that EOF, before the
+# listener's reply arrives. Without -N, nc keeps the socket open and exits
+# when the listener closes it after replying.
+if ! printf 'png\n' | nc -w 15 127.0.0.1 "$PORT" > "$tmp"; then
   cat >&2 <<HINT
 xclip: could not reach the Mac clipboard listener on 127.0.0.1:$PORT.
 Check that:

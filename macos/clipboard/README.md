@@ -90,9 +90,16 @@ Then press Ctrl+V in a Claude Code session.
   permission and allow it.
 - **Ctrl+V must arrive as a plain keystroke.** tmux binds nothing to `C-v` in this config.
   If your terminal binds Ctrl+V to paste, unbind it there.
-- **Multiple SSH connections**: only the first connection wins the forward. Later ones print
-  `Warning: remote port forwarding failed for listen port 7778`. Harmless, as long as one
-  connection holds it.
+- **Connected but no reply.** The `TARGETS` command prints "connected ... but got no reply"
+  while the listener log on the Mac shows a line for the request, or `send ... failed:
+  Broken pipe`. The request reached the Mac and the reply was lost on the way back. The
+  Coder agent tears down a forwarded connection as soon as the workspace side sends EOF,
+  so the client must not half-close the socket after sending `png`. `bin/xclip` runs `nc`
+  without `-N` for this reason. If you test by hand, do the same.
+- **Multiple SSH connections**: only the first connection wins the forward. Later ones fail
+  to request it, which is harmless as long as one connection holds it. The Coder-managed
+  block in `~/.ssh/config` sets `LogLevel ERROR`, which hides the warning; run
+  `ssh -v <alias> true` to see `remote forward success` or `remote forward failure`.
 
 ## Limitations
 
