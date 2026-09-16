@@ -19,43 +19,78 @@ ln -sf "$DIR/openhtml-listener" "$HOME/.local/bin/openhtml-listener"
 echo "==> Linked ~/.local/bin/openhtml-listener -> $DIR/openhtml-listener"
 
 # --- 2. SSH forwards for coder.* hosts ---
-# Appending is safe: ssh accumulates forwarding directives from every
-# matching Host block, so this works regardless of where the Coder-managed
-# block sits.
+# Our block is regenerated on every run, so a change to the forwards (like
+# the servehtml port range) reaches an existing ~/.ssh/config on the next
+# run. Appending a block is safe: ssh accumulates forwarding directives from
+# every matching Host block, so this works regardless of where the
+# Coder-managed block sits.
 SSH_CONFIG="$HOME/.ssh/config"
 mkdir -p "$HOME/.ssh"
 touch "$SSH_CONFIG"
 # Both Coder alias styles: <agent>.<workspace>.<owner>.coder and coder.<ws>
 HOST_PATTERN='*.coder coder.*'
 MARKER='added by dotfiles macos/openhtml/install.sh'
-if grep -q "RemoteForward 7777" "$SSH_CONFIG"; then
-  # Check the Host line of OUR block (the line right after the marker
-  # comment) — the Coder-managed block elsewhere in the file may also start
-  # with 'Host *.coder', so a whole-file grep would false-positive.
-  if grep -A1 "$MARKER" "$SSH_CONFIG" | grep -q '^Host \*\.coder'; then
-    echo "==> SSH forwards already present in ~/.ssh/config"
-  elif grep -q "$MARKER" "$SSH_CONFIG"; then
-    # Migrate a block written by an older install.sh whose Host pattern
-    # (coder.*) missed <agent>.<ws>.<owner>.coder style aliases.
-    sed -i '' \
-      -e "/$(printf '%s' "$MARKER" | sed 's|/|\\/|g')/{" \
-      -e 'n' \
-      -e "s/^Host .*/Host $HOST_PATTERN/" \
-      -e '}' \
-      "$SSH_CONFIG"
-    echo "==> Updated SSH config Host pattern to '$HOST_PATTERN'"
-  else
-    echo "==> RemoteForward 7777 exists in ~/.ssh/config but wasn't added by"
-    echo "    this installer — make sure its Host pattern covers: $HOST_PATTERN"
-  fi
-else
-  cat >>"$SSH_CONFIG" <<EOF
+# servehtml ports. The range sits in an unassigned IANA block (23054-23271),
+# clear of common dev-server defaults and below the ephemeral ranges. Keep in
+# sync with first_port/last_port in servehtml (zsh-functions).
+SERVEHTML_FIRST_PORT=23180
+SERVEHTML_LAST_PORT=23189
 
-# openhtml/servehtml tunnels (added by dotfiles macos/openhtml/install.sh)
-Host $HOST_PATTERN
-  RemoteForward 7777 127.0.0.1:7777
-  LocalForward 8080 127.0.0.1:8080
-EOF
+# The block we want in ~/.ssh/config.
+forwards_block() {
+  echo "# openhtml/servehtml tunnels ($MARKER)"
+  echo "Host $HOST_PATTERN"
+  echo "  RemoteForward 7777 127.0.0.1:7777"
+  local p
+  for ((p = SERVEHTML_FIRST_PORT; p <= SERVEHTML_LAST_PORT; p++)); do
+    echo "  LocalForward $p 127.0.0.1:$p"
+  done
+}
+
+# Our block as it exists now: the marker line, then every following Host or
+# indented line. Prints nothing if the marker is absent.
+current_block() {
+  awk -v marker="$MARKER" '
+    index($0, marker) { in_block = 1; print; next }
+    in_block && (/^Host / || /^[ \t]/) { print; next }
+    in_block { exit }
+  ' "$SSH_CONFIG"
+}
+
+# The config with our block removed, along with the blank line above it.
+config_without_block() {
+  awk -v marker="$MARKER" '
+    { lines[NR] = $0 }
+    index($0, marker) { start = NR }
+    END {
+      end = start
+      if (start) {
+        while (end + 1 <= NR && (lines[end + 1] ~ /^Host / || lines[end + 1] ~ /^[ \t]/)) end++
+        if (start > 1 && lines[start - 1] == "") start--
+      }
+      for (i = 1; i <= NR; i++) if (!start || i < start || i > end) print lines[i]
+    }
+  ' "$SSH_CONFIG"
+}
+
+if grep -q "$MARKER" "$SSH_CONFIG"; then
+  if [ "$(current_block)" = "$(forwards_block)" ]; then
+    echo "==> SSH forwards already present in ~/.ssh/config"
+  else
+    rest="$(config_without_block)"
+    {
+      if [ -n "$rest" ]; then printf '%s\n\n' "$rest"; fi
+      forwards_block
+    } >"$SSH_CONFIG"
+    chmod 600 "$SSH_CONFIG"
+    echo "==> Rewrote the openhtml/servehtml forwards in ~/.ssh/config"
+  fi
+elif grep -q "RemoteForward 7777" "$SSH_CONFIG"; then
+  echo "==> RemoteForward 7777 exists in ~/.ssh/config but wasn't added by"
+  echo "    this installer — make sure its Host pattern covers: $HOST_PATTERN"
+  echo "    and that it also has LocalForward $SERVEHTML_FIRST_PORT through $SERVEHTML_LAST_PORT"
+else
+  { echo; forwards_block; } >>"$SSH_CONFIG"
   chmod 600 "$SSH_CONFIG"
   echo "==> Added forwards to ~/.ssh/config under 'Host $HOST_PATTERN'"
   echo "    (if your Coder SSH aliases match neither pattern, edit the Host line)"
@@ -89,3 +124,4 @@ echo
 echo "Done. Reconnect SSH (forwards only apply to new connections), then test"
 echo "from a workspace tmux pane:"
 echo "  echo '<h1>hi</h1>' > /tmp/t.html && openhtml /tmp/t.html"
+echo "  servehtml /tmp/t.html   # opens http://localhost:$SERVEHTML_FIRST_PORT/t.html"
