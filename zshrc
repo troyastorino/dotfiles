@@ -47,3 +47,9 @@ export PATH="$HOME/.local/bin:$DOTFILES_DIR/bin:$PATH"
 if [[ "$OSTYPE" == darwin* && -o interactive ]] && (( $+functions[dotfiles-mac-check] )); then
   dotfiles-mac-check
 fi
+
+# On the Mac, link ~/picnic/skills into ~/.claude/skills, and relink when
+# picnic adds or drops a skill. Silent when the links are current.
+if [[ "$OSTYPE" == darwin* && -o interactive ]] && (( $+functions[dotfiles-picnic-skills-check] )); then
+  dotfiles-picnic-skills-check
+fi

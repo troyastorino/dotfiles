@@ -71,6 +71,15 @@ if [ -d "$DOTFILES_DIR/claude/output-styles" ]; then
   done
 fi
 
+# --- Link picnic skills (Mac only) ---
+# Coder workspaces link ~/picnic/skills through picnic's own setup. The Mac has
+# no such step, so link each skill into ~/.claude/skills here. zshrc re-runs
+# this when picnic adds or drops a skill.
+if [ "$(uname)" = "Darwin" ] && [ -d "$HOME/picnic/skills" ]; then
+  echo "==> Linking picnic skills..."
+  "$DOTFILES_DIR/claude/link-picnic-skills.sh"
+fi
+
 # --- Drop the rules symlink earlier versions installed ---
 # The writing rules moved to claude/output-styles/. A machine that ran the old
 # install.sh still holds a symlink to the file that moved, and it now resolves
