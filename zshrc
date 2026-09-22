@@ -53,3 +53,8 @@ fi
 if [[ "$OSTYPE" == darwin* && -o interactive ]] && (( $+functions[dotfiles-picnic-skills-check] )); then
   dotfiles-picnic-skills-check
 fi
+
+# Picnic Coder workspaces write ~/.picnicrc. The stock zshrc there sources it;
+# this file replaces that zshrc, so source it here too. Keep it last: it
+# deduplicates PATH and expects its RVM entry to be the final PATH change.
+[ -f "$HOME/.picnicrc" ] && source "$HOME/.picnicrc"
