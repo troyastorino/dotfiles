@@ -7,6 +7,7 @@ files work differently.
 |---|---|---|
 | `output-styles/*.md` | `~/.claude/output-styles/` | Symlink, so `git pull` updates them |
 | `settings.json` | `~/.claude/settings.json` | Merge, because Claude Code writes there too |
+| `~/picnic/skills/*` (Mac only) | `~/.claude/skills/` | One symlink per skill, by `link-picnic-skills.sh` |
 
 - `output-styles/writing-rules.md` tells Claude how to write when it writes as itself. It
   pairs the structure rules of ASD-STE100 (Simplified Technical English) with Orwell's six
@@ -17,6 +18,30 @@ files work differently.
   `/fewer-permission-prompts` in a session.
 - `rules-body.sh` prints the style file without its YAML frontmatter. `install.sh` and
   `sync-prefs.sh` both call it, so both agree on what "the rules" are.
+
+## Picnic skills on the Mac
+
+A Coder workspace links the picnic repo's skills into `~/.claude/skills` during setup
+(`link_repo_skills` in `picnic/infra/cloud/workspace/lib/agent-setup.sh`). The Mac has no
+such step, so `link-picnic-skills.sh` does it, for the same set:
+
+- It asks picnic's own filter, `skills/scripts/list-coder-skills.py`, which skills Coder
+  links: those with `plugin: engineering`, or with `metadata.install-in-coder: true`. When
+  picnic changes that rule, the Mac follows.
+- The filter needs PyYAML, which the Mac python lacks. The script builds a private venv
+  for it in `~/.cache/picnic-skills/venv`, and rebuilds it if it breaks.
+- It links each selected skill as `~/.claude/skills/<name>`. The link is to the whole
+  directory, so a file added to a skill shows up at once.
+- It links from the primary checkout, so the skills follow the branch `~/picnic` is on.
+- It never replaces an entry it did not make. A personal skill of the same name wins, and
+  the script prints that it skipped the picnic one.
+- It removes its own links whose skill is gone or has left the Coder set.
+- If the filter fails or selects nothing, it leaves the links as they are and says so.
+
+`install.sh` runs it. `dotfiles-picnic-skills-check` in `zsh-functions` runs it again at
+shell start when `~/picnic/skills` or any `SKILL.md` is newer than the script's stamp in
+`~/.cache/picnic-skills/`. A `git pull` or branch switch in `~/picnic` causes that. A
+running session picks up the new links without a restart.
 
 ## Why an output style, and not `~/.claude/rules/`
 
@@ -112,6 +137,7 @@ the project's `.claude/settings.local.json`, and that layer outranks this one.
 ```sh
 ~/.dotfiles/install.sh      # ~/dotfiles/install.sh on the Mac
 ls -l ~/.claude/output-styles/
+ls -l ~/.claude/skills/ | grep picnic   # Mac only
 python3 -m json.tool ~/.claude/settings.json
 ```
 

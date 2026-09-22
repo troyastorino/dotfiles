@@ -134,3 +134,23 @@ dotfiles-mac-check() {
     fi
   done
 }
+
+# Keep ~/.claude/skills in step with ~/picnic/skills on the Mac. zshrc calls
+# this from every interactive shell. The linked set changes when a skill is
+# added or removed, which bumps the mtime of ~/picnic/skills, or when a
+# SKILL.md changes, which can move a skill in or out of the Coder set. A
+# `git pull` or branch switch in ~/picnic does either. So compare those
+# against the stamp claude/link-picnic-skills.sh leaves, in-process (about
+# 4 ms), and relink only when one is newer. The script prints only changes.
+dotfiles-picnic-skills-check() {
+  emulate -L zsh
+  [[ "$OSTYPE" == darwin* ]] || return 0
+  local src="$HOME/picnic/skills" stamp="$HOME/.cache/picnic-skills/linked"
+  local root="${DOTFILES_DIR:-$HOME/dotfiles}"
+  [[ -d "$src" && -x "$root/claude/link-picnic-skills.sh" ]] || return 0
+  if [[ -f "$stamp" && ! "$src" -nt "$stamp" ]]; then
+    local -a newer=( "$src"/*/SKILL.md(NY1e:'[[ $REPLY -nt $stamp ]]':) )
+    (( $#newer )) || return 0
+  fi
+  "$root/claude/link-picnic-skills.sh" -q
+}
