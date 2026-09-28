@@ -20,9 +20,10 @@ ZSH_TMUX_AUTOCONNECT=true
 ZSH_TMUX_AUTOQUIT=false          # Don't close terminal when detaching
 ZSH_TMUX_DEFAULT_SESSION_NAME=main
 
-# On Coder, the first shell after a workspace restart finds no tmux server, and
-# the tmux plugin would open one empty session. Rebuild the saved Claude Code
-# and Codex panes first, so the plugin attaches to them instead. The pipe to
+# On Coder, install.sh rebuilds the saved Claude Code and Codex panes when the
+# workspace starts. When it did not, or the tmux server died later, the first
+# shell finds no tmux server, and the tmux plugin would open one empty session.
+# Rebuild the panes first, so the plugin attaches to them instead. The pipe to
 # cat stops restore from attaching by itself: it would exec tmux, and detaching
 # would then close the terminal, which ZSH_TMUX_AUTOQUIT=false exists to avoid.
 if [[ -n "$CODER" && -z "$TMUX" && -z "$INSIDE_EMACS" && -o interactive \

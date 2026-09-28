@@ -152,4 +152,27 @@ if command -v zsh &>/dev/null; then
   fi
 fi
 
+# --- Restore saved Claude Code and Codex panes (Coder only) ---
+# Coder runs this script on every workspace start, including a restart of the
+# container inside a running pod. That kills tmux and every agent in it, and
+# nothing else brings the panes back while nobody is connected. So rebuild them
+# here, and prompt each session that was busy at the last snapshot to continue.
+#
+# Coder blocks logins until this script ends. The first shell therefore finds
+# the tmux server already up and skips its own restore in zshrc. Two restores at
+# once would resume every session twice.
+#
+# `bash -lc` from $HOME gives the tmux server the environment an SSH login gets.
+# /etc/profile.d sources ~/.picnicrc, which loads the secrets through picnic-env
+# and unsets CODEX_API_KEY. picnic-env finds the repo from the current
+# directory, so the `cd` matters. The panes inherit the server's environment.
+panes_tool="$HOME/picnic/bin/tmux-agent-panes"
+if [ -n "${CODER:-}" ] && [ -x "$panes_tool" ] \
+    && [ -f "$HOME/.claude/tmux-snapshots/state.json" ] \
+    && command -v tmux &>/dev/null && ! tmux has-session 2>/dev/null; then
+  echo "==> Restoring saved agent panes..."
+  (cd "$HOME" && bash -lc '"$1" restore --continue-busy' _ "$panes_tool") \
+    || echo "    (restore reported a problem — see the lines above)"
+fi
+
 echo "==> Dotfiles setup complete!"
