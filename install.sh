@@ -152,6 +152,25 @@ if command -v zsh &>/dev/null; then
   fi
 fi
 
+# --- Put tmux where Codex can find it (Coder only) ---
+# Codex looks for tmux only in system directories such as /usr/local/bin, never
+# on PATH. Homebrew keeps tmux under /home/linuxbrew, so Codex finds none. It
+# then cannot copy a mouse selection through tmux, and it does not turn on the
+# key mode that makes Shift+Enter insert a newline. A symlink does not help:
+# Codex resolves it and rejects a target outside those directories. So write a
+# wrapper script. The root filesystem resets on every workspace restart, so
+# write it on each start, before the restore below starts Codex.
+brew_tmux=/home/linuxbrew/.linuxbrew/bin/tmux
+if [ -n "${CODER:-}" ] && [ -x "$brew_tmux" ] && [ ! -e /usr/local/bin/tmux ]; then
+  if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+    echo "==> Adding a /usr/local/bin/tmux wrapper for Codex..."
+    printf '#!/bin/sh\nexec %s "$@"\n' "$brew_tmux" | sudo tee /usr/local/bin/tmux >/dev/null
+    sudo chmod 755 /usr/local/bin/tmux
+  else
+    echo "    (no passwordless sudo — skipping the tmux wrapper for Codex)"
+  fi
+fi
+
 # --- Restore saved Claude Code and Codex panes (Coder only) ---
 # Coder runs this script on every workspace start, including a restart of the
 # container inside a running pod. That kills tmux and every agent in it, and

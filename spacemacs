@@ -562,6 +562,26 @@ This function is called at the very end of Spacemacs startup, after layer
 configuration.
 Put your configuration code here, except for variables that should be set
 before packages are loaded."
+  ;; In a terminal frame inside tmux, send each kill to the system clipboard
+  ;; with OSC 52. tmux forwards it to the outer terminal. The frame has
+  ;; TERM=tmux-256color, or xterm-256color when zshrc falls back because the
+  ;; tmux-256color terminfo entry is missing. Only the first reads
+  ;; `xterm-tmux-extra-capabilities', but both run `terminal-init-xterm'. So
+  ;; give that the capabilities Emacs uses for tmux, plus setSelection.
+  (define-advice terminal-init-xterm (:around (init) tmux-clipboard)
+    (let ((xterm-extra-capabilities
+           (if (getenv "TMUX" (selected-frame))
+               '(modifyOtherKeys setSelection)
+             xterm-extra-capabilities)))
+      (funcall init)))
+  ;; tmux has no Cmd modifier, so Ghostty's Cmd+C reaches Emacs as M-c, which
+  ;; runs `capitalize-word'. Make it copy a visual selection instead, like the
+  ;; osx layer's Cmd+C binding.
+  (define-key evil-visual-state-map (kbd "M-c") #'evil-yank)
+  ;; Copy a mouse selection when the drag ends, like tmux copy mode. Not on
+  ;; the Mac, where GUI frames (`ec') would then copy on every drag too.
+  (unless (eq system-type 'darwin)
+    (setq mouse-drag-copy-region 'non-empty))
 )
 
 

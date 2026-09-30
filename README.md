@@ -15,6 +15,10 @@ repo lives at `~/dotfiles` on the Mac. On Coder it lives at `~/.config/coderv2/d
 and backs up a real file it would replace. It also installs the Claude Code config;
 [claude/README.md](claude/README.md) describes that part.
 
+On Coder, `install.sh` also writes `/usr/local/bin/tmux`, a wrapper around the Homebrew
+tmux. Codex looks for tmux only in system directories, and without it Codex cannot copy a
+mouse selection or read Shift+Enter.
+
 ## tmux on Coder
 
 `zshrc` starts tmux in every interactive shell, through the Oh My Zsh `tmux` plugin. The
