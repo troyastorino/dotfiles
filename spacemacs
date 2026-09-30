@@ -32,7 +32,7 @@ This function should only modify configuration layer settings."
 
    ;; List of configuration layers to load.
    dotspacemacs-configuration-layers
-   '(html
+   `(html
      sql
      csv
      javascript
@@ -58,7 +58,11 @@ This function should only modify configuration layer settings."
      ;; spell-checking
      ;; syntax-checking
      ;; version-control
-     treemacs)
+     treemacs
+     ;; macOS only. Declare it here: Spacemacs rebuilds its layer list from
+     ;; this variable after `dotspacemacs/user-init', so a layer declared there
+     ;; is dropped.
+     ,@(when (eq system-type 'darwin) '(osx)))
 
 
    ;; List of additional packages that will be installed without being wrapped
@@ -542,9 +546,6 @@ This function is called immediately after `dotspacemacs/init', before layer
 configuration.
 It is mostly for variables that should be set before packages are loaded.
 If you are unsure, try setting them in `dotspacemacs/user-config' first."
-  ;; Load osx layer only on macOS
-  (when (eq system-type 'darwin)
-    (configuration-layer/declare-layers '(osx)))
 )
 
 
@@ -562,6 +563,26 @@ This function is called at the very end of Spacemacs startup, after layer
 configuration.
 Put your configuration code here, except for variables that should be set
 before packages are loaded."
+  ;; In a terminal frame inside tmux, send each kill to the system clipboard
+  ;; with OSC 52. tmux forwards it to the outer terminal. The frame has
+  ;; TERM=tmux-256color, or xterm-256color when zshrc falls back because the
+  ;; tmux-256color terminfo entry is missing. Only the first reads
+  ;; `xterm-tmux-extra-capabilities', but both run `terminal-init-xterm'. So
+  ;; give that the capabilities Emacs uses for tmux, plus setSelection.
+  (define-advice terminal-init-xterm (:around (init) tmux-clipboard)
+    (let ((xterm-extra-capabilities
+           (if (getenv "TMUX" (selected-frame))
+               '(modifyOtherKeys setSelection)
+             xterm-extra-capabilities)))
+      (funcall init)))
+  ;; tmux has no Cmd modifier, so Ghostty's Cmd+C reaches Emacs as M-c, which
+  ;; runs `capitalize-word'. Make it copy a visual selection instead, like the
+  ;; osx layer's Cmd+C binding.
+  (define-key evil-visual-state-map (kbd "M-c") #'evil-yank)
+  ;; Copy a mouse selection when the drag ends, like tmux copy mode. Not on
+  ;; the Mac, where GUI frames (`ec') would then copy on every drag too.
+  (unless (eq system-type 'darwin)
+    (setq mouse-drag-copy-region 'non-empty))
 )
 
 
