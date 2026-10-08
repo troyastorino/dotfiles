@@ -194,4 +194,21 @@ if [ -n "${CODER:-}" ] && [ -x "$panes_tool" ] \
     || echo "    (restore reported a problem — see the lines above)"
 fi
 
+# --- Restart the discovery engine (Coder only) ---
+# The discovery engine is a long-running research driver in the knowledge repo
+# (projects/hypothesis-generation-on-data). ~/.discovery-engine links to that
+# folder, so moving the engine needs only a new link. A workspace restart kills
+# the driver, so start it again here; `start` does nothing when a driver is
+# already running. Resolve the link first, because the driver's git checkpoints
+# expect its real path. Backgrounded, because Coder blocks logins until this
+# script ends. `bash -lc` from $HOME gives it the login environment, as the
+# pane restore above does.
+if [ -n "${CODER:-}" ] && [ -L "$HOME/.discovery-engine" ]; then
+  discovery="$(readlink -f "$HOME/.discovery-engine")/engine/bin/discovery"
+  if [ -x "$discovery" ]; then
+    echo "==> Starting the discovery engine..."
+    (cd "$HOME" && setsid nohup bash -lc '"$1" start' _ "$discovery" >/dev/null 2>&1 < /dev/null &)
+  fi
+fi
+
 echo "==> Dotfiles setup complete!"
