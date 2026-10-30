@@ -211,4 +211,16 @@ if [ -n "${CODER:-}" ] && [ -L "$HOME/.discovery-engine" ]; then
   fi
 fi
 
+# --- Start the lab CRM's daily refresh scheduler (Coder only) ---
+# crm/daily.sh in the board-tier knowledge repo runs the lab-crm-refresh skill each morning
+# after 4am Pacific with headless Claude Code, on the subscription signed in here. A workspace
+# restart kills the scheduler, so start it again here; `start` does nothing when one is
+# already running, and a morning missed while the workspace was down runs at once.
+# Backgrounded, because Coder blocks logins until this script ends.
+lab_crm="$HOME/knowledge-tier-board/projects/ai-labs-mapping/crm/daily.sh"
+if [ -n "${CODER:-}" ] && [ -x "$lab_crm" ]; then
+  echo "==> Starting the lab CRM refresh scheduler..."
+  (cd "$HOME" && setsid nohup bash -lc '"$1" start' _ "$lab_crm" >/dev/null 2>&1 < /dev/null &)
+fi
+
 echo "==> Dotfiles setup complete!"
