@@ -154,3 +154,49 @@ dotfiles-picnic-skills-check() {
   fi
   "$root/claude/link-picnic-skills.sh" -q
 }
+
+# ssh that reconnects when the connection drops, for the Mac's connection to
+# the Coder workspace. The workspace's zshrc attaches tmux at login, so a
+# reconnect lands back in the same tmux session, and the clipboard and
+# openhtml forwards come back with it.
+#
+# Usage: sshr <host> [ssh args...]
+#
+# ssh exits 255 when the connection fails or drops, as after the laptop
+# sleeps ("Connection to ... closed by remote host"). Then sshr waits and
+# connects again, waiting longer after each failure, up to 30s. Ctrl+C during
+# the wait stops it. Any other status comes from the remote shell, which means
+# you logged out, so sshr returns it. ServerAlive makes ssh give up on a dead
+# connection after about 30s instead of hanging.
+sshr() {
+  emulate -L zsh
+  if (( $# == 0 )); then
+    echo "usage: sshr <host> [ssh args...]" >&2
+    return 2
+  fi
+  local rc start delay=1
+  while true; do
+    start=$SECONDS
+    command ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 "$@"
+    rc=$?
+    (( rc == 255 )) || return $rc
+    _sshr_reset_terminal
+    # A session that ran a while was a good connection, so start over at 1s.
+    (( SECONDS - start > 60 )) && delay=1
+    echo "sshr: connection lost. Reconnecting in ${delay}s. Ctrl+C stops." >&2
+    sleep $delay
+    (( delay = delay * 2 > 30 ? 30 : delay * 2 ))
+  done
+}
+
+# A dropped connection leaves the terminal in the modes tmux turned on. With
+# mouse reporting still on, moving the mouse prints escape codes at the local
+# prompt. tmux turns these off when it detaches cleanly (tty_stop_tty in tmux's
+# tty.c), so send the same sequences: scroll region, colors, keypad, cursor
+# shape and visibility, mouse reporting, bracketed paste, focus events,
+# extended keys and margins, then leave the alternate screen.
+_sshr_reset_terminal() {
+  printf '\e[r\e[m\e[?1l\e>\e[0 q\e[?12l\e[?25h'
+  printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l\e[?1005l'
+  printf '\e[?2004l\e[?1004l\e[>4m\e[?69l\e[?1049l'
+}
