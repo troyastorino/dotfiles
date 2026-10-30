@@ -1,0 +1,33 @@
+#!/bin/sh
+# Gives a window's size to dotMux after a tap. tmux.conf runs this in the
+# background from hooks, with the window that just changed.
+#
+# With window-size latest, a window takes the size of the client that last
+# sent a key (server_client_update_latest in tmux's server-client.c). dotMux
+# runs in control mode and switches panes and windows by sending commands, so
+# without this a tap leaves the window at the Mac's size until you type.
+#
+# The hooks can't tell which client made the change. When the Mac makes it,
+# the cause is a key or a click, so the Mac's activity time is under 2 seconds
+# old, and this does nothing. Otherwise each control-mode client showing the
+# window gets a key that tmux counts and then drops: User0, sent while the
+# client is in the prefix table. No table binds User0, so tmux returns the
+# client to the root table and passes nothing to the pane.
+#
+# Every command here runs from this script's own tmux client. A command run
+# on behalf of a control-mode client sends that client an extra %begin/%end
+# block, and when hooks did that, dotMux showed window IDs in place of names.
+#
+# Usage: tmux-dotmux-size <window-id>
+
+window="${1:?usage: tmux-dotmux-size <window-id>}"
+now=$(date +%s)
+clients=$(tmux list-clients -F '#{client_control_mode} #{client_activity} #{window_id} #{client_name}') || exit 0
+
+printf '%s\n' "$clients" | awk -v now="$now" '$1 == 0 && now - $2 < 2 { found = 1 } END { exit !found }' && exit 0
+
+printf '%s\n' "$clients" | awk -v w="$window" '$1 == 1 && $3 == w { print $4 }' |
+  while read -r client; do
+    tmux switch-client -c "$client" -T prefix \; send-keys -K -c "$client" User0
+  done
+exit 0
