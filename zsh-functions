@@ -133,6 +133,19 @@ dotfiles-mac-check() {
       echo "dotfiles: $tool install failed. See $dir/README.md" >&2
     fi
   done
+  # The lab CRM's texts sync reads Messages, so only you install it the first time.
+  # After that, reinstall it when a file in its directory is newer than its stamp.
+  dir="$root/macos/imessage-crm"
+  stamp="$HOME/.cache/imessage-crm/installed"
+  if [[ -x "$dir/install.sh" && -f "$stamp" ]]; then
+    for f in "$dir"/*(N.); do
+      if [[ "$f" -nt "$stamp" ]]; then
+        echo "dotfiles: texts sync: ${f:t} changed since the last install. Running $dir/install.sh"
+        "$dir/install.sh" >/dev/null || echo "dotfiles: texts sync install failed. See $dir/README.md" >&2
+        break
+      fi
+    done
+  fi
 }
 
 # Keep ~/.claude/skills in step with ~/picnic/skills on the Mac. zshrc calls
