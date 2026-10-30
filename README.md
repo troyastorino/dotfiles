@@ -19,6 +19,14 @@ On Coder, `install.sh` also writes `/usr/local/bin/tmux`, a wrapper around the H
 tmux. Codex looks for tmux only in system directories, and without it Codex cannot copy a
 mouse selection or read Shift+Enter.
 
+## Connect from the Mac
+
+Connect with `sshr <alias>` in place of `ssh <alias>`, with the alias you give `ssh` now. When
+the connection drops, as after the laptop sleeps, `sshr` resets the terminal and connects
+again, and the workspace's zshrc attaches you to the same tmux session. It stops when you
+log out, or when you press Ctrl+C while it waits to reconnect. `zsh-functions` describes
+how it works.
+
 ## tmux on Coder
 
 `zshrc` starts tmux in every interactive shell, through the Oh My Zsh `tmux` plugin. The
