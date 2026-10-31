@@ -8,9 +8,14 @@ Runs on the Mac every hour, from the LaunchAgent com.user.imessage-crm-sync. Eac
 3. reads every iMessage and SMS conversation with those people since SINCE from the Messages database;
 4. sends the conversations to the workspace as one JSON file, which the next refresh reads.
 
-Only conversations that include someone on the list leave the Mac, and the file names people
-without giving their phone numbers or email addresses. Reading the Messages and Contacts
-databases needs Full Disk Access; README.md says how to grant it.
+Only conversations that include someone on the list leave the Mac. A group chat leaves only when
+everyone in it is on the list or one of the Picnic people the list names, or when the list names
+the group itself. The file names people without giving their phone numbers or email addresses.
+
+The run also suggests CRM people to add to the list: those it finds in Contacts with texts since
+SINCE. For them it sends only counts and the date of the last text, never what was said.
+
+Reading the Messages and Contacts databases needs Full Disk Access; README.md says how to grant it.
 
 Written for the Python 3.9 that /usr/bin/python3 runs, with the standard library only.
 """
@@ -28,6 +33,7 @@ CONTACTS_DIR = os.path.join(HOME, 'Library', 'Application Support', 'AddressBook
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 GROUP_STYLE = 43  # chat.style of a group conversation; 45 is a conversation with one person
 UNKNOWN = 'someone not in Contacts'
+VERSION = 2  # the export format; the CRM's build reads only this version
 
 
 def log(msg):
@@ -137,6 +143,28 @@ def same_person(cards):
     return groups
 
 
+def lookup(term, org, cards):
+    """The handles of the one person a list term names; a note for the log, or None; and the Contacts
+    card's name when only a shortened first name matched it, or None."""
+    if is_handle(term):
+        return ({handle_key(term)} if handle_key(term) else set()), None, None
+    # An exact name first. Only when no card has it, a shortened first name.
+    exact = [c for c in cards if name_keys(term) & c['keys']]
+    hits = exact or [c for c in cards if close_name(term, c)]
+    groups = same_person(hits)
+    org = norm(org)
+    if len(groups) > 1 and org:
+        # Two people with one name: keep the one whose card names the organization.
+        at_org = [g for g in groups if any(o and (org in norm(o) or norm(o) in org) for o in g['orgs'])]
+        groups = at_org or groups
+    if len(groups) != 1:
+        return set(), f'"{term}" matches {len(groups) or "no"} people in Contacts, so it is left out', None
+    if exact:
+        return groups[0]['handles'], None, None
+    card = next(c['name'] for c in hits if c['handles'] & groups[0]['handles'])
+    return groups[0]['handles'], f'"{term}" matched the Contacts card "{card}"', card
+
+
 def resolve(entries, cards):
     """Each list entry's handles. Returns (owner: handle -> entry id, names: handle -> name to show, report per entry)."""
     owner, names, report = {}, {}, []
@@ -147,25 +175,10 @@ def resolve(entries, cards):
         terms = [t.strip() for t in e.get('match') or [] if t and t.strip()] or [e['name']]
         found, notes = set(), []
         for t in terms:
-            if is_handle(t):
-                if handle_key(t):
-                    found.add(handle_key(t))
-                continue
-            # An exact name first. Only when no card has it, a shortened first name.
-            exact = [c for c in cards if name_keys(t) & c['keys']]
-            hits = exact or [c for c in cards if close_name(t, c)]
-            groups = same_person(hits)
-            org = norm(e.get('org'))
-            if len(groups) > 1 and org:
-                # Two people with one name: keep the one whose card names the entry's organization.
-                at_org = [g for g in groups if any(o and (org in norm(o) or norm(o) in org) for o in g['orgs'])]
-                groups = at_org or groups
-            if len(groups) == 1:
-                found |= groups[0]['handles']
-                if not exact:
-                    notes.append(f'"{t}" matched the Contacts card "{next(c["name"] for c in hits if c["handles"] & groups[0]["handles"])}"')
-            else:
-                notes.append(f'"{t}" matches {len(groups) or "no"} people in Contacts, so it is left out')
+            handles, note, _ = lookup(t, e.get('org'), cards)
+            found |= handles
+            if note:
+                notes.append(note)
         for h in sorted(found):
             if owner.get(h, e['id']) != e['id']:
                 notes.append(f'a number or address of {e["name"]} is also on the list for another person, who keeps it')
@@ -201,10 +214,8 @@ def body_text(blob):
     return blob[i:i + n].decode('utf-8', 'replace')
 
 
-def conversations(owner, names):
-    """The conversations that include a listed handle. A person's one-to-one chats over iMessage,
-    SMS and each of their handles merge into one conversation; each group chat stays its own."""
-    con = open_db(MESSAGES_DB)
+def chat_members(con):
+    """Each chat's guid, name, style and members' handle keys, by chat ROWID; and handle ROWID -> handle."""
     handles = dict(con.execute('SELECT ROWID, id FROM handle'))
     chats = {}
     for rowid, guid, title, style in con.execute('SELECT ROWID, guid, display_name, style FROM chat'):
@@ -212,9 +223,46 @@ def conversations(owner, names):
     for chat_id, handle_id in con.execute('SELECT chat_id, handle_id FROM chat_handle_join'):
         if chat_id in chats and handle_id in handles:
             chats[chat_id]['keys'].append(handle_key(handles[handle_id]))
+    return chats, handles
+
+
+def suggestions(candidates):
+    """CRM people not on the list who have texts with Troy since SINCE, with counts and the last date only.
+    candidates maps a handle key to its person: {"pid", "name", "contactsName"}."""
+    con = open_db(MESSAGES_DB)
+    chats, _ = chat_members(con)
+    since = (SINCE - APPLE_EPOCH).total_seconds() * 1e9
+    found = {}
+    rows = con.execute('SELECT cmj.chat_id, COUNT(*), MAX(m.date) FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID '
+                       'WHERE m.date >= ? AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0 '
+                       'GROUP BY cmj.chat_id', (since,))
+    for chat_id, n, last in rows:
+        c = chats.get(chat_id)
+        if not c:
+            continue
+        keys = set(c['keys'])
+        group = c['style'] == GROUP_STYLE or len(keys) > 1
+        for person in {candidates[k]['pid']: candidates[k] for k in keys if k in candidates}.values():
+            f = found.setdefault(person['pid'], dict(person, direct=0, groups=0, last=''))
+            if group:
+                f['groups'] += 1
+            else:
+                f['direct'] += n
+            f['last'] = max(f['last'], apple_time(last).strftime('%Y-%m-%d'))
+    con.close()
+    return sorted(found.values(), key=lambda f: f['last'], reverse=True)
+
+
+def conversations(owner, names, picnic, named_groups):
+    """The conversations that include a listed handle, and the group chats left out. A person's one-to-one
+    chats over iMessage, SMS and each of their handles merge into one conversation; each group chat stays
+    its own. A group chat comes along when each member's handle is listed or in picnic, or when its name
+    or id is in named_groups."""
+    con = open_db(MESSAGES_DB)
+    chats, handles = chat_members(con)
     wanted = {cid: c for cid, c in chats.items() if any(k in owner for k in c['keys'])}
     if not wanted:
-        return [], 0
+        return [], [], 0
     ids = ','.join(str(int(cid)) for cid in wanted)
     attachments = defaultdict(list)
     for mid, name in con.execute(f'''SELECT maj.message_id, a.transfer_name FROM message_attachment_join maj
@@ -222,11 +270,14 @@ def conversations(owner, names):
             WHERE cmj.chat_id IN ({ids})'''):
         if name:
             attachments[mid].append(name)
-    convs, by_chat, empty = {}, {}, 0
+    convs, by_chat, left_out, empty = {}, {}, {}, 0
     for chat_id, c in wanted.items():
         keys = sorted(set(c['keys']))
         group = c['style'] == GROUP_STYLE or len(keys) > 1
         cid = f'group-{hashlib.sha1(c["guid"].encode()).hexdigest()[:16]}' if group else f'dm-{owner[keys[0]]}'
+        if group and not all(k in owner or k in picnic for k in keys) and not {norm(cid), norm(c['title'])} & named_groups:
+            left_out[cid] = {'id': cid, 'title': c['title'], 'members': len(keys), 'listed': sorted({names[k] for k in keys if k in owner})}
+            continue
         conv = convs.setdefault(cid, {'id': cid, 'group': group, 'title': c['title'] if group else None, 'entries': set(),
                                       'people': set(), 'messages': {}})
         conv['entries'] |= {owner[k] for k in keys if k in owner}
@@ -238,6 +289,8 @@ def conversations(owner, names):
             FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             WHERE cmj.chat_id IN ({ids}) AND m.date >= ? AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0''', (since,))
     for chat_id, rowid, guid, date, from_me, handle_id, text, body, service in rows:
+        if chat_id not in by_chat:
+            continue
         text = (text or body_text(body)).replace('￼', '').strip()
         if not text and not attachments[rowid]:
             empty += 1
@@ -252,7 +305,7 @@ def conversations(owner, names):
         msgs = sorted(conv['messages'].values(), key=lambda m: m['sent'])
         if msgs:
             out.append(dict(conv, entries=sorted(conv['entries']), people=sorted(conv['people']), messages=msgs))
-    return sorted(out, key=lambda c: c['id']), empty
+    return sorted(out, key=lambda c: c['id']), sorted(left_out.values(), key=lambda g: g['id']), empty
 
 
 def main():
@@ -261,14 +314,29 @@ def main():
     if not raw.strip():
         log(f'No text list at {host}:{REMOTE_DIR}/allowlist.json yet. The CRM refresh writes it.')
         return
-    entries = json.loads(raw)['entries']
-    owner, names, report = resolve(entries, contacts())
-    convs, empty = conversations(owner, names)
+    allow = json.loads(raw)
+    cards = contacts()
+    owner, names, report = resolve(allow['entries'], cards)
+    picnic, notes = set(), []
+    for name in allow.get('picnic', []):
+        handles, note, _ = lookup(name, 'Picnic', cards)
+        picnic |= handles
+        if note:
+            notes.append(f'Picnic: {note}')
+    named_groups = {norm(g) for g in allow.get('groups', [])} - {''}
+    convs, left_out, empty = conversations(owner, names, picnic, named_groups)
+    candidates = {}
+    for p in allow.get('candidates', []):
+        # A match by shortened first name names the card, so Troy can check it is the right person.
+        handles, _, card = lookup(p['name'], p.get('org'), cards)
+        for h in handles - set(owner) - picnic:
+            candidates[h] = {'pid': p['pid'], 'name': p['name'], 'contactsName': card}
+    suggested = suggestions(candidates)
     for r in report:
         mine = [c for c in convs if r['id'] in c['entries']]
         r['conversations'], r['messages'] = len(mine), sum(len(c['messages']) for c in mine)
-    out = {'exportedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'since': SINCE.date().isoformat(),
-           'entries': report, 'conversations': convs}
+    out = {'version': VERSION, 'exportedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'since': SINCE.date().isoformat(),
+           'entries': report, 'notes': notes, 'leftOut': left_out, 'suggestions': suggested, 'conversations': convs}
     ssh(host, f'mkdir -p {REMOTE_DIR} && cat > {REMOTE_DIR}/texts.json.part && mv {REMOTE_DIR}/texts.json.part {REMOTE_DIR}/texts.json',
         json.dumps(out, ensure_ascii=False).encode())
     log(f'Sent {len(convs)} conversations, {sum(len(c["messages"]) for c in convs)} messages, for {len(report)} people to {host}. '
@@ -276,6 +344,19 @@ def main():
     for r in report:
         log(f'  {r["name"]}: numbers and addresses {r["handles"]}, conversations {r["conversations"]}, messages {r["messages"]}'
             + ''.join(f'; {n}' for n in r['notes']))
+    for n in notes:
+        log(f'  {n}')
+    if left_out:
+        log(f'Left out {len(left_out)} group chats with people who are not on the list. To include one, add its name or id under '
+            '"Group chats to include" on the CRM page\'s About view:')
+    for g in left_out:
+        log(f'  {g["id"]}: {repr(g["title"]) if g["title"] else "no name"}, {g["members"]} members besides you, '
+            f'listed: {", ".join(g["listed"])}')
+    if suggested:
+        log(f'Suggested for the text list: {len(suggested)} people in the CRM you have texted since {SINCE.date().isoformat()}.')
+    for f in suggested:
+        log(f'  {f["name"]}: {f["direct"]} texts one to one, {f["groups"]} group chats, last {f["last"]}'
+            + (f' (Contacts card "{f["contactsName"]}")' if f['contactsName'] else ''))
 
 
 if __name__ == '__main__':
