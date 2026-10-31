@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Send Troy's texts with the people on the lab CRM's text list to his Coder workspace.
+
+Runs on the Mac every hour, from the LaunchAgent com.user.imessage-crm-sync. Each run:
+1. reads the text list over SSH, from the file the CRM's daily refresh writes in the workspace;
+2. finds each listed person's phone numbers and email addresses: the ones the list gives, and
+   the ones on the Contacts card whose name matches;
+3. reads every iMessage and SMS conversation with those people since SINCE from the Messages database;
+4. sends the conversations to the workspace as one JSON file, which the next refresh reads.
+
+Only conversations that include someone on the list leave the Mac, and the file names people
+without giving their phone numbers or email addresses. Reading the Messages and Contacts
+databases needs Full Disk Access; README.md says how to grant it.
+
+Written for the Python 3.9 that /usr/bin/python3 runs, with the standard library only.
+"""
+import glob, hashlib, json, os, re, sqlite3, subprocess, sys, unicodedata
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser('~')
+HOST_FILE = os.path.join(HOME, '.config', 'imessage-crm', 'host')
+DEFAULT_HOST = 'coder.troy-workspace'
+REMOTE_DIR = '/home/coder/lab-crm-texts'
+SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)  # the CRM's history starts here
+MESSAGES_DB = os.path.join(HOME, 'Library', 'Messages', 'chat.db')
+CONTACTS_DIR = os.path.join(HOME, 'Library', 'Application Support', 'AddressBook')
+APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
+GROUP_STYLE = 43  # chat.style of a group conversation; 45 is a conversation with one person
+UNKNOWN = 'someone not in Contacts'
+
+
+def log(msg):
+    print(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} {msg}', flush=True)
+
+
+def ssh(host, command, data=None):
+    # coder ssh starts a stopped workspace by default. An hourly job would then keep the
+    # workspace running all day, so a stopped workspace stays stopped and this run fails.
+    env = dict(os.environ, CODER_SSH_DISABLE_AUTOSTART='true')
+    r = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30', '-o', 'ClearAllForwardings=yes', host, command],
+                       input=data, capture_output=True, timeout=600, env=env)
+    if r.returncode:
+        raise SystemExit(f'ssh {host} failed with exit code {r.returncode}: {r.stderr.decode(errors="replace").strip()[-400:]}')
+    return r.stdout
+
+
+def open_db(path):
+    try:
+        con = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        con.execute('SELECT 1 FROM sqlite_master LIMIT 1')
+        return con
+    except sqlite3.OperationalError as e:
+        app = os.path.join(sys.base_prefix, 'Resources', 'Python.app')
+        raise SystemExit(f"Can't read {path} ({e}). This needs Full Disk Access for /usr/bin/python3 and for {app}, "
+                         f'and if those are not enough, for {os.path.realpath(sys.executable)}: '
+                         'System Settings > Privacy & Security > Full Disk Access. See README.md.')
+
+
+def norm(s):
+    s = unicodedata.normalize('NFKD', s or '').encode('ascii', 'ignore').decode().lower()
+    return re.sub(r'[^a-z0-9]+', ' ', s).strip()
+
+
+def name_keys(name):
+    """The ways a name can be written: "Paxton (Pax) Maeder-York" is also "Paxton Maeder-York" and "Pax Maeder-York"."""
+    keys = {norm(re.sub(r'\([^)]*\)', ' ', name or ''))}
+    nick = re.match(r'\s*\S+\s+\(([^)]+)\)\s+(.+)$', name or '')
+    if nick:
+        keys.add(norm(f'{nick.group(1)} {nick.group(2)}'))
+    return {k for k in keys if k}
+
+
+def close_name(term, card):
+    """Same last name, and one first name starts the other: "Paxton Maeder-York" and "Pax Maeder-York"."""
+    for a in name_keys(term):
+        for b in card['keys']:
+            a1, b1 = a.split(), b.split()
+            if len(a1) > 1 and len(b1) > 1 and a1[-1] == b1[-1] and min(len(a1[0]), len(b1[0])) >= 3 \
+                    and (a1[0].startswith(b1[0]) or b1[0].startswith(a1[0])):
+                return True
+    return False
+
+
+def handle_key(h):
+    """An email address in lower case, or a phone number's last 10 digits, so +1 (415) 555-0100 and 415.555.0100 match."""
+    h = (h or '').strip().lower()
+    if '@' in h:
+        return h
+    digits = re.sub(r'\D', '', h)
+    return digits[-10:] if len(digits) >= 7 else ''
+
+
+def is_handle(term):
+    return '@' in term or (re.fullmatch(r'[\d\s()+.\-]+', term) is not None and len(re.sub(r'\D', '', term)) >= 7)
+
+
+def contacts():
+    """The Contacts cards with a phone number or email address: [{"name", "keys", "org", "handles"}].
+
+    A card synced from two accounts appears once in each account's database, so a person can have
+    several cards; same_person() groups them by shared phone numbers and addresses."""
+    paths = [os.path.join(CONTACTS_DIR, 'AddressBook-v22.abcddb')] + sorted(glob.glob(os.path.join(CONTACTS_DIR, 'Sources', '*', 'AddressBook-v22.abcddb')))
+    cards = []
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        con = open_db(path)
+        by_pk = {}
+        for pk, first, middle, last, nick, org in con.execute('SELECT Z_PK, ZFIRSTNAME, ZMIDDLENAME, ZLASTNAME, ZNICKNAME, ZORGANIZATION FROM ZABCDRECORD'):
+            full = ' '.join(x for x in (first, last) if x)
+            keys = name_keys(full) | {norm(' '.join(x for x in (first, middle, last) if x))}
+            if nick and last:
+                keys.add(norm(f'{nick} {last}'))
+            by_pk[pk] = {'name': full or org or '', 'keys': {k for k in keys if k}, 'org': org or '', 'handles': set()}
+        rows = list(con.execute('SELECT ZOWNER, ZFULLNUMBER FROM ZABCDPHONENUMBER')) + list(con.execute('SELECT ZOWNER, ZADDRESS FROM ZABCDEMAILADDRESS'))
+        for owner, value in rows:
+            k = handle_key(value)
+            if owner in by_pk and k:
+                by_pk[owner]['handles'].add(k)
+        con.close()
+        cards += [c for c in by_pk.values() if c['handles']]
+    return cards
+
+
+def same_person(cards):
+    """Group cards that share a phone number or address: [{"handles", "orgs"}], one per person."""
+    groups = []
+    for c in cards:
+        joined = [g for g in groups if g['handles'] & c['handles']]
+        g = {'handles': set(c['handles']), 'orgs': {c['org']}}
+        for other in joined:
+            g['handles'] |= other['handles']
+            g['orgs'] |= other['orgs']
+            groups.remove(other)
+        groups.append(g)
+    return groups
+
+
+def resolve(entries, cards):
+    """Each list entry's handles. Returns (owner: handle -> entry id, names: handle -> name to show, report per entry)."""
+    owner, names, report = {}, {}, []
+    for c in cards:
+        for h in c['handles']:
+            names.setdefault(h, c['name'])
+    for e in entries:
+        terms = [t.strip() for t in e.get('match') or [] if t and t.strip()] or [e['name']]
+        found, notes = set(), []
+        for t in terms:
+            if is_handle(t):
+                if handle_key(t):
+                    found.add(handle_key(t))
+                continue
+            # An exact name first. Only when no card has it, a shortened first name.
+            exact = [c for c in cards if name_keys(t) & c['keys']]
+            hits = exact or [c for c in cards if close_name(t, c)]
+            groups = same_person(hits)
+            org = norm(e.get('org'))
+            if len(groups) > 1 and org:
+                # Two people with one name: keep the one whose card names the entry's organization.
+                at_org = [g for g in groups if any(o and (org in norm(o) or norm(o) in org) for o in g['orgs'])]
+                groups = at_org or groups
+            if len(groups) == 1:
+                found |= groups[0]['handles']
+                if not exact:
+                    notes.append(f'"{t}" matched the Contacts card "{next(c["name"] for c in hits if c["handles"] & groups[0]["handles"])}"')
+            else:
+                notes.append(f'"{t}" matches {len(groups) or "no"} people in Contacts, so it is left out')
+        for h in sorted(found):
+            if owner.get(h, e['id']) != e['id']:
+                notes.append(f'a number or address of {e["name"]} is also on the list for another person, who keeps it')
+                continue
+            owner[h] = e['id']
+            names[h] = e['name']
+        report.append({'id': e['id'], 'pid': e.get('pid'), 'name': e['name'], 'org': e.get('org'), 'orgId': e.get('orgId'),
+                       'handles': sum(1 for h in found if owner.get(h) == e['id']), 'notes': notes})
+    return owner, names, report
+
+
+def apple_time(v):
+    """Messages stores times as nanoseconds since 2001 (seconds before macOS 10.13)."""
+    return APPLE_EPOCH + timedelta(seconds=v / 1e9 if v > 1e11 else v)
+
+
+def body_text(blob):
+    """The text of a message whose text column is empty. Recent macOS versions keep many messages'
+    text only in attributedBody, an NSAttributedString in Apple's typedstream format. The string's
+    bytes follow the NSString class name and a "+" type code, after a length: one byte, or 0x81 and
+    two little-endian bytes, or 0x82 and four."""
+    if not blob:
+        return ''
+    i = blob.find(b'NSString')
+    i = blob.find(b'+', i + 8, i + 24) if i >= 0 else -1
+    if i < 0:
+        return ''
+    n, i = blob[i + 1], i + 2
+    if n == 0x81:
+        n, i = int.from_bytes(blob[i:i + 2], 'little'), i + 2
+    elif n == 0x82:
+        n, i = int.from_bytes(blob[i:i + 4], 'little'), i + 4
+    return blob[i:i + n].decode('utf-8', 'replace')
+
+
+def conversations(owner, names):
+    """The conversations that include a listed handle. A person's one-to-one chats over iMessage,
+    SMS and each of their handles merge into one conversation; each group chat stays its own."""
+    con = open_db(MESSAGES_DB)
+    handles = dict(con.execute('SELECT ROWID, id FROM handle'))
+    chats = {}
+    for rowid, guid, title, style in con.execute('SELECT ROWID, guid, display_name, style FROM chat'):
+        chats[rowid] = {'guid': guid, 'title': title or None, 'style': style, 'keys': []}
+    for chat_id, handle_id in con.execute('SELECT chat_id, handle_id FROM chat_handle_join'):
+        if chat_id in chats and handle_id in handles:
+            chats[chat_id]['keys'].append(handle_key(handles[handle_id]))
+    wanted = {cid: c for cid, c in chats.items() if any(k in owner for k in c['keys'])}
+    if not wanted:
+        return [], 0
+    ids = ','.join(str(int(cid)) for cid in wanted)
+    attachments = defaultdict(list)
+    for mid, name in con.execute(f'''SELECT maj.message_id, a.transfer_name FROM message_attachment_join maj
+            JOIN attachment a ON a.ROWID = maj.attachment_id JOIN chat_message_join cmj ON cmj.message_id = maj.message_id
+            WHERE cmj.chat_id IN ({ids})'''):
+        if name:
+            attachments[mid].append(name)
+    convs, by_chat, empty = {}, {}, 0
+    for chat_id, c in wanted.items():
+        keys = sorted(set(c['keys']))
+        group = c['style'] == GROUP_STYLE or len(keys) > 1
+        cid = f'group-{hashlib.sha1(c["guid"].encode()).hexdigest()[:16]}' if group else f'dm-{owner[keys[0]]}'
+        conv = convs.setdefault(cid, {'id': cid, 'group': group, 'title': c['title'] if group else None, 'entries': set(),
+                                      'people': set(), 'messages': {}})
+        conv['entries'] |= {owner[k] for k in keys if k in owner}
+        conv['people'] |= {names.get(k, UNKNOWN) for k in keys}
+        by_chat[chat_id] = cid
+    since = (SINCE - APPLE_EPOCH).total_seconds() * 1e9
+    # associated_message_type marks tapback reactions, and item_type marks events such as a renamed group.
+    rows = con.execute(f'''SELECT cmj.chat_id, m.ROWID, m.guid, m.date, m.is_from_me, m.handle_id, m.text, m.attributedBody, m.service
+            FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            WHERE cmj.chat_id IN ({ids}) AND m.date >= ? AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0''', (since,))
+    for chat_id, rowid, guid, date, from_me, handle_id, text, body, service in rows:
+        text = (text or body_text(body)).replace('￼', '').strip()
+        if not text and not attachments[rowid]:
+            empty += 1
+            continue
+        k = '' if from_me else handle_key(handles.get(handle_id, ''))
+        convs[by_chat[chat_id]]['messages'][guid] = {
+            'id': guid, 'sent': apple_time(date).strftime('%Y-%m-%dT%H:%M:%SZ'), 'fromMe': bool(from_me),
+            'from': None if from_me else names.get(k, UNKNOWN), 'text': text, 'attachments': attachments[rowid], 'service': service}
+    con.close()
+    out = []
+    for conv in convs.values():
+        msgs = sorted(conv['messages'].values(), key=lambda m: m['sent'])
+        if msgs:
+            out.append(dict(conv, entries=sorted(conv['entries']), people=sorted(conv['people']), messages=msgs))
+    return sorted(out, key=lambda c: c['id']), empty
+
+
+def main():
+    host = open(HOST_FILE).read().strip() if os.path.exists(HOST_FILE) else DEFAULT_HOST
+    raw = ssh(host, f'cat {REMOTE_DIR}/allowlist.json 2>/dev/null || true')
+    if not raw.strip():
+        log(f'No text list at {host}:{REMOTE_DIR}/allowlist.json yet. The CRM refresh writes it.')
+        return
+    entries = json.loads(raw)['entries']
+    owner, names, report = resolve(entries, contacts())
+    convs, empty = conversations(owner, names)
+    for r in report:
+        mine = [c for c in convs if r['id'] in c['entries']]
+        r['conversations'], r['messages'] = len(mine), sum(len(c['messages']) for c in mine)
+    out = {'exportedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'since': SINCE.date().isoformat(),
+           'entries': report, 'conversations': convs}
+    ssh(host, f'mkdir -p {REMOTE_DIR} && cat > {REMOTE_DIR}/texts.json.part && mv {REMOTE_DIR}/texts.json.part {REMOTE_DIR}/texts.json',
+        json.dumps(out, ensure_ascii=False).encode())
+    log(f'Sent {len(convs)} conversations, {sum(len(c["messages"]) for c in convs)} messages, for {len(report)} people to {host}. '
+        f'{empty} messages had no text or attachment and were left out.')
+    for r in report:
+        log(f'  {r["name"]}: numbers and addresses {r["handles"]}, conversations {r["conversations"]}, messages {r["messages"]}'
+            + ''.join(f'; {n}' for n in r['notes']))
+
+
+if __name__ == '__main__':
+    main()
