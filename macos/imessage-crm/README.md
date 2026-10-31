@@ -18,11 +18,16 @@ workspace, and the job reads it from there over SSH.
 
 ## What leaves the Mac
 
-- Only conversations that include someone on the list, since 2026-01-01. A group chat counts when
-  one listed person is in it.
-- People's names, not their phone numbers or email addresses. A sender who isn't in your Contacts
-  shows as "someone not in Contacts".
+- Only conversations that include someone on the list, since 2026-01-01.
+- A group chat only when everyone else in it is on the list or one of the Picnic people the list
+  names (Luna Federici and Rob Porter, set in the CRM's `texts.py`), or when the CRM page names
+  the group under "Group chats to include". The log names each group chat left out, with an id
+  you can give the page for a chat that has no name.
+- People's names, not their phone numbers or email addresses.
 - Text and attachment file names. Reactions and group events, such as a renamed group, stay out.
+- Suggestions: for each other person in the CRM whom your Contacts and Messages show you
+  texting, how many texts and group chats, and the date of the last text. Nothing they wrote.
+  The CRM page lists them under About, with an Add button.
 
 The CRM page removes phone numbers from the text. Everyone in `board-access@picnic.ai` can read
 the page's data, the texts included.
@@ -52,7 +57,8 @@ the page's data, the texts included.
    conversations and messages it sent. A name is looked up as written first. When no card has
    it, a card with the same last name and a shortened first name counts: "Paxton Maeder-York"
    finds "Pax Maeder-York", and the log says so. A name that finds no one, or two people, is
-   left out and named in the log. Give that entry a phone number on the CRM page.
+   left out and named in the log. Give that entry a phone number on the CRM page. After the
+   people, the log lists the group chats left out and the suggestions.
 
 After the first install, a new shell runs the installer again when a file here changes
 (`dotfiles-mac-check` in `zsh-functions`). It never installs the job on its own.
