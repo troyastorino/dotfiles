@@ -1,13 +1,14 @@
 # Send texts to the lab CRM
 
-`imessage-crm-sync` runs on the Mac every hour. It copies your iMessage and SMS conversations
+`imessage-crm-sync` runs on the Mac every hour. It copies your iMessage, SMS and WhatsApp conversations
 with the people on the lab CRM's text list to the Coder workspace, where the CRM's daily refresh
 adds them to the outreach CRM page.
 
 ```
 CRM page (my-texts) ─> daily refresh ─> workspace:/home/coder/lab-crm-texts/allowlist.json
                                                         │ ssh, hourly
-Mac: Contacts + Messages (chat.db) <─ imessage-crm-sync ┘
+Mac: Contacts + Messages (chat.db)  <─ imessage-crm-sync ┘
+     + WhatsApp (ChatStorage.sqlite)
                                    ─> workspace:/home/coder/lab-crm-texts/texts.json ─> next daily refresh ─> CRM page
 ```
 
@@ -25,7 +26,8 @@ workspace, and the job reads it from there over SSH.
   you can give the page for a chat that has no name.
 - People's names, not their phone numbers or email addresses.
 - Text and attachment file names. Reactions and group events, such as a renamed group, stay out.
-- Suggestions: for each other person in the CRM whom your Contacts and Messages show you
+  A WhatsApp photo, video, voice message or document goes as that word, without the file.
+- Suggestions: for each other person in the CRM whom your Contacts, Messages and WhatsApp show you
   texting, how many texts and group chats, and the date of the last text. Nothing they wrote.
   The CRM page lists them under About, with an Add button.
 
@@ -72,6 +74,15 @@ After the first install, a new shell runs the installer again when a file here c
   and the next run sends everything again.
 - **Timing.** A change to the list reaches the Mac after the next morning refresh. The texts
   reach the page at the refresh after that, or when you run the refresh by hand.
+- **WhatsApp.** The job reads the database of the WhatsApp desktop app, in
+  `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared`. Without the app, it sends
+  iMessage and SMS only. The database holds what the app synced from your phone, so open the app
+  now and then. A person's WhatsApp chat is its own conversation in the CRM, apart from their
+  iMessage and SMS chat. WhatsApp names many people by a private id in place of a phone number.
+  The job finds the number in WhatsApp's own contacts, or takes the Contacts card that alone has
+  the name WhatsApp shows. The log's "WhatsApp:" line counts each kind. A person matched to no one
+  counts as not on the list. WhatsApp does not document its database. When an update changes it,
+  the log says the database "did not read as expected", and iMessage and SMS still go.
 - **SMS.** Texts from Android phones reach the Mac only when Text Message Forwarding is on for
   this Mac, in the iPhone's Messages settings. Older history needs Messages in iCloud.
 - **Full Disk Access still missing.** The log says "Can't read ... Full Disk Access" after you
