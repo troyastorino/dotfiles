@@ -5,7 +5,8 @@ Runs on the Mac every hour, from the LaunchAgent com.user.imessage-crm-sync. Eac
 1. reads the text list over SSH, from the file the CRM's daily refresh writes in the workspace;
 2. finds each listed person's phone numbers and email addresses: the ones the list gives, and
    the ones on the Contacts card whose name matches;
-3. reads every iMessage and SMS conversation with those people since SINCE from the Messages database;
+3. reads every iMessage and SMS conversation with those people since SINCE from the Messages database,
+   and every WhatsApp conversation with them from the WhatsApp desktop app's database, when the app is installed;
 4. sends the conversations to the workspace as one JSON file, which the next refresh reads.
 
 Only conversations that include someone on the list leave the Mac. A group chat leaves only when
@@ -15,7 +16,7 @@ the group itself. The file names people without giving their phone numbers or em
 The run also suggests CRM people to add to the list: those it finds in Contacts with texts since
 SINCE. For them it sends only counts and the date of the last text, never what was said.
 
-Reading the Messages and Contacts databases needs Full Disk Access; README.md says how to grant it.
+Reading the Messages, Contacts and WhatsApp databases needs Full Disk Access; README.md says how to grant it.
 
 Written for the Python 3.9 that /usr/bin/python3 runs, with the standard library only.
 """
@@ -30,6 +31,16 @@ REMOTE_DIR = '/home/coder/lab-crm-texts'
 SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)  # the CRM's history starts here
 MESSAGES_DB = os.path.join(HOME, 'Library', 'Messages', 'chat.db')
 CONTACTS_DIR = os.path.join(HOME, 'Library', 'Application Support', 'AddressBook')
+WHATSAPP_DIR = os.path.join(HOME, 'Library', 'Group Containers', 'group.net.whatsapp.WhatsApp.shared')
+WHATSAPP_DB = os.path.join(WHATSAPP_DIR, 'ChatStorage.sqlite')
+WHATSAPP_CONTACTS_DB = os.path.join(WHATSAPP_DIR, 'ContactsV2.sqlite')
+WHATSAPP = 'WhatsApp'
+WHATSAPP_DIRECT, WHATSAPP_GROUP = 0, 1  # ZWACHATSESSION.ZSESSIONTYPE; 2 is a broadcast list and 3 is status updates
+WHATSAPP_EVENT = 6  # ZWAMESSAGE.ZMESSAGETYPE of a group event, such as someone joining
+# ZMESSAGETYPE of a message that is a file and no text. These numbers come from write-ups of the iPhone
+# database, which has the same tables; WhatsApp does not document them.
+WHATSAPP_MEDIA = {1: 'photo', 2: 'video', 3: 'voice message', 4: 'contact card', 5: 'location', 8: 'document'}
+ME = 'Troy Astorino'  # WhatsApp may list the owner among a group's members; his own numbers don't keep a group back
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 GROUP_STYLE = 43  # chat.style of a group conversation; 45 is a conversation with one person
 UNKNOWN = 'someone not in Contacts'
@@ -56,7 +67,7 @@ def open_db(path):
         con = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
         con.execute('SELECT 1 FROM sqlite_master LIMIT 1')
         return con
-    except sqlite3.OperationalError as e:
+    except sqlite3.DatabaseError as e:  # macOS refuses a protected folder with OperationalError or "authorization denied"
         app = os.path.join(sys.base_prefix, 'Resources', 'Python.app')
         raise SystemExit(f"Can't read {path} ({e}). This needs Full Disk Access for /usr/bin/python3 and for {app}, "
                          f'and if those are not enough, for {os.path.realpath(sys.executable)}: '
@@ -226,9 +237,155 @@ def chat_members(con):
     return chats, handles
 
 
-def suggestions(candidates):
+def whatsapp_phone(jid):
+    """The handle key of "<phone number>@s.whatsapp.net", which can carry ":<device>" before the @."""
+    return handle_key(jid.split('@')[0].split(':')[0])
+
+
+def whatsapp_lids():
+    """WhatsApp private id -> phone number key. WhatsApp names many people by a private id ("<digits>@lid")
+    in place of their phone number. Its contacts database pairs the two, in tables WhatsApp does not
+    document, so this reads every row of every table and keeps the rows that hold both."""
+    lids = {}
+    if not os.path.exists(WHATSAPP_CONTACTS_DB):
+        return lids
+    con = open_db(WHATSAPP_CONTACTS_DB)
+    for (table,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+        try:
+            cur = con.execute(f'SELECT * FROM "{table}"')
+        except sqlite3.Error:
+            continue
+        cols = [d[0].upper() for d in cur.description]
+        for row in cur:
+            lid = jid = phone = None
+            for col, v in zip(cols, row):
+                if not isinstance(v, str) or not v:
+                    continue
+                if v.endswith('@lid') or (col.endswith('LID') and not col.endswith('VALID') and v.isdigit()):
+                    lid = v.split('@')[0].split(':')[0]
+                elif v.endswith('@s.whatsapp.net'):
+                    jid = v
+                elif 'PHONE' in col and is_handle(v):
+                    phone = v
+            k = whatsapp_phone(jid) if jid else handle_key(phone)
+            if lid and k:
+                lids[lid] = k
+    con.close()
+    return lids
+
+
+def whatsapp_chats(con, lids, cards, known):
+    """WhatsApp's one-to-one and group chats, by ZWACHATSESSION key:
+    {"jid", "title", "group", "keys": [<member handle key>], "members": {<ZWAGROUPMEMBER key>: <handle key>},
+     "partner": <the name WhatsApp shows for the other person in a one-to-one chat>}.
+    A member's key is their phone number's, the same key the Messages handles get. A private id takes the
+    number WhatsApp's contacts pair it with. Without one, it takes the Contacts card that alone has the name
+    WhatsApp shows for the person; among that card's numbers, one in known (listed, Picnic or a candidate) first.
+    A member neither way keeps a key that matches no one, so they count as not on the list.
+    Also returns how many members each way resolved."""
+    by_name, how = {}, {'phone': 0, 'paired': 0, 'name': 0, 'unknown': 0}
+
+    def from_name(name):
+        if name not in by_name:
+            people = same_person([c for c in cards if name_keys(name) & c['keys']])
+            handles = sorted(people[0]['handles']) if len(people) == 1 else []
+            by_name[name] = next((h for h in handles if h in known), handles[0] if handles else '')
+        return by_name[name]
+
+    def key(jid, name):
+        jid = jid or ''
+        user = jid.split('@')[0].split(':')[0]
+        if jid.endswith('@s.whatsapp.net') and handle_key(user):
+            how['phone'] += 1
+            return handle_key(user)
+        if user in lids:
+            how['paired'] += 1
+            return lids[user]
+        k = from_name(name) if name else ''
+        how['name' if k else 'unknown'] += 1
+        return k or f'whatsapp:{jid}'
+
+    chats = {}
+    for pk, kind, jid, name in con.execute('SELECT Z_PK, ZSESSIONTYPE, ZCONTACTJID, ZPARTNERNAME FROM ZWACHATSESSION '
+                                           'WHERE ZSESSIONTYPE IN (?, ?) AND COALESCE(ZREMOVED, 0) = 0', (WHATSAPP_DIRECT, WHATSAPP_GROUP)):
+        group = kind == WHATSAPP_GROUP
+        chats[pk] = {'jid': jid or f'session-{pk}', 'title': (name or None) if group else None, 'group': group,
+                     'keys': [] if group else [key(jid, name)], 'members': {}, 'partner': None if group else name}
+    mine = {h for c in cards if name_keys(ME) & c['keys'] for h in c['handles']}
+    for pk, session, jid, name in con.execute('SELECT Z_PK, ZCHATSESSION, ZMEMBERJID, ZCONTACTNAME FROM ZWAGROUPMEMBER'):
+        if session in chats and chats[session]['group']:
+            k = key(jid, name)
+            chats[session]['members'][pk] = k
+            if k not in mine:
+                chats[session]['keys'].append(k)
+    return chats, how
+
+
+def whatsapp_open(notes):
+    """The WhatsApp database, or None when the app is not installed or its database can't be read."""
+    if not os.path.exists(WHATSAPP_DB):
+        return None
+    try:
+        con = sqlite3.connect(f'file:{WHATSAPP_DB}?mode=ro', uri=True)
+        con.execute('SELECT 1 FROM ZWAMESSAGE LIMIT 1')
+        return con
+    except sqlite3.Error as e:
+        notes.append(f"WhatsApp: can't read {WHATSAPP_DB} ({e}), so WhatsApp conversations are left out. "
+                     'It may need Full Disk Access; see README.md.')
+        return None
+
+
+def whatsapp_conversations(con, chats, owner, names, picnic, named_groups):
+    """The WhatsApp conversations that include a listed person, and the group chats left out, by the rule
+    conversations() has for Messages. A person's WhatsApp chat stays apart from their iMessage and SMS chat."""
+    wanted = {pk: c for pk, c in chats.items() if any(k in owner for k in c['keys'])}
+    convs, by_chat, left_out, empty = {}, {}, {}, 0
+    for pk, c in wanted.items():
+        keys = sorted(set(c['keys']))
+        cid = f'wa-group-{hashlib.sha1(c["jid"].encode()).hexdigest()[:16]}' if c['group'] else f'wa-dm-{owner[keys[0]]}'
+        if c['group'] and not all(k in owner or k in picnic for k in keys) and not {norm(cid), norm(c['title'])} & named_groups:
+            left_out[cid] = {'id': cid, 'title': c['title'], 'members': len(keys), 'listed': sorted({names[k] for k in keys if k in owner}),
+                             'service': WHATSAPP}
+            continue
+        conv = convs.setdefault(cid, {'id': cid, 'group': c['group'], 'title': c['title'], 'service': WHATSAPP, 'entries': set(),
+                                      'people': set(), 'messages': {}})
+        conv['entries'] |= {owner[k] for k in keys if k in owner}
+        conv['people'] |= {names.get(k, UNKNOWN) for k in keys}
+        by_chat[pk] = cid
+    if by_chat:
+        ids = ','.join(str(int(pk)) for pk in by_chat)
+        rows = con.execute(f'''SELECT ZCHATSESSION, Z_PK, ZSTANZAID, ZMESSAGEDATE, ZISFROMME, ZGROUPMEMBER, ZTEXT, ZMESSAGETYPE
+                FROM ZWAMESSAGE WHERE ZCHATSESSION IN ({ids}) AND ZMESSAGEDATE >= ? AND COALESCE(ZMESSAGETYPE, 0) != ?''',
+                           ((SINCE - APPLE_EPOCH).total_seconds(), WHATSAPP_EVENT))
+        for session, pk, stanza, date, from_me, member, text, kind in rows:
+            c, text = chats[session], (text or '').strip()
+            attachments = [WHATSAPP_MEDIA[kind]] if not text and kind in WHATSAPP_MEDIA else []
+            if not text and not attachments:
+                empty += 1
+                continue
+            k = '' if from_me else c['members'].get(member, '') if c['group'] else c['keys'][0]
+            mid = f'wa-{stanza or pk}'
+            convs[by_chat[session]]['messages'][mid] = {
+                'id': mid, 'sent': apple_time(date).strftime('%Y-%m-%dT%H:%M:%SZ'), 'fromMe': bool(from_me),
+                'from': None if from_me else names.get(k, UNKNOWN), 'text': text, 'attachments': attachments, 'service': WHATSAPP}
+    out = []
+    for conv in convs.values():
+        msgs = sorted(conv['messages'].values(), key=lambda m: m['sent'])
+        if msgs:
+            out.append(dict(conv, entries=sorted(conv['entries']), people=sorted(conv['people']), messages=msgs))
+    return sorted(out, key=lambda c: c['id']), sorted(left_out.values(), key=lambda g: g['id']), empty
+
+
+def whatsapp_counts(con, chats):
+    """(member handle keys, whether a group, messages, time of the last one, partner) for each WhatsApp chat with messages since SINCE."""
+    rows = con.execute('SELECT ZCHATSESSION, COUNT(*), MAX(ZMESSAGEDATE) FROM ZWAMESSAGE WHERE ZMESSAGEDATE >= ? '
+                       'AND COALESCE(ZMESSAGETYPE, 0) != ? GROUP BY ZCHATSESSION', ((SINCE - APPLE_EPOCH).total_seconds(), WHATSAPP_EVENT))
+    return [(set(chats[s]['keys']), chats[s]['group'], n, last, chats[s]['partner']) for s, n, last in rows if s in chats]
+
+
+def suggestions(candidates, whatsapp=()):
     """CRM people not on the list who have texts with Troy since SINCE, with counts and the last date only.
-    candidates maps a handle key to its person: {"pid", "name", "contactsName"}."""
+    candidates maps a handle key to its person: {"pid", "name", "contactsName"}. whatsapp is whatsapp_counts()."""
     con = open_db(MESSAGES_DB)
     chats, _ = chat_members(con)
     since = (SINCE - APPLE_EPOCH).total_seconds() * 1e9
@@ -236,12 +393,9 @@ def suggestions(candidates):
     rows = con.execute('SELECT cmj.chat_id, COUNT(*), MAX(m.date) FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID '
                        'WHERE m.date >= ? AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0 '
                        'GROUP BY cmj.chat_id', (since,))
-    for chat_id, n, last in rows:
-        c = chats.get(chat_id)
-        if not c:
-            continue
-        keys = set(c['keys'])
-        group = c['style'] == GROUP_STYLE or len(keys) > 1
+    counts = [(set(c['keys']), c['style'] == GROUP_STYLE or len(set(c['keys'])) > 1, n, last)
+              for c, n, last in ((chats.get(chat_id), n, last) for chat_id, n, last in rows) if c]
+    for keys, group, n, last in counts + [w[:4] for w in whatsapp]:
         for person in {candidates[k]['pid']: candidates[k] for k in keys if k in candidates}.values():
             f = found.setdefault(person['pid'], dict(person, direct=0, groups=0, last=''))
             if group:
@@ -331,7 +485,22 @@ def main():
         handles, _, card = lookup(p['name'], p.get('org'), cards)
         for h in handles - set(owner) - picnic:
             candidates[h] = {'pid': p['pid'], 'name': p['name'], 'contactsName': card}
-    suggested = suggestions(candidates)
+    wa, wa_counts, wa_log = whatsapp_open(notes), [], None
+    if wa:
+        # A change to WhatsApp's tables must not stop the iMessage and SMS texts, so it becomes a note.
+        try:
+            chats, how = whatsapp_chats(wa, whatsapp_lids(), cards, set(owner) | picnic | set(candidates))
+            wa_convs, wa_left_out, wa_empty = whatsapp_conversations(wa, chats, owner, names, picnic, named_groups)
+            wa_counts = whatsapp_counts(wa, chats)
+            convs, left_out, empty = convs + wa_convs, left_out + wa_left_out, empty + wa_empty
+            wa_log = (f'WhatsApp: {len(wa_convs)} conversations, {sum(len(c["messages"]) for c in wa_convs)} messages. Of the people in its chats, '
+                      f'{how["phone"]} have a phone number, {how["paired"]} a private id paired with a number, '
+                      f'{how["name"]} a private id matched by name in Contacts, and {how["unknown"]} a private id matched to no one.')
+        except sqlite3.Error as e:
+            notes.append(f'WhatsApp: its database did not read as expected ({e}), so WhatsApp conversations are left out. '
+                         'The job needs an update for this version of WhatsApp.')
+        wa.close()
+    suggested = suggestions(candidates, wa_counts)
     for r in report:
         mine = [c for c in convs if r['id'] in c['entries']]
         r['conversations'], r['messages'] = len(mine), sum(len(c['messages']) for c in mine)
@@ -344,13 +513,21 @@ def main():
     for r in report:
         log(f'  {r["name"]}: numbers and addresses {r["handles"]}, conversations {r["conversations"]}, messages {r["messages"]}'
             + ''.join(f'; {n}' for n in r['notes']))
+    if wa_log:
+        log(wa_log)
+        direct = [w for w in wa_counts if not w[1]]
+        lost = sorted({w[4] or 'no name' for w in direct if all(k.startswith('whatsapp:') for k in w[0])})
+        on_list = sum(1 for w in direct if w[0] & set(owner))
+        log(f'  WhatsApp one-to-one chats since {SINCE.date().isoformat()}: {len(direct)}, of which {on_list} with people on the list '
+            f'and {len(lost)} with someone matched to no phone number' + (f': {", ".join(lost)}. These names stay in this log. '
+            'To include one, give that person a Contacts card with the same name, or the phone number on the CRM page.' if lost else '.'))
     for n in notes:
         log(f'  {n}')
     if left_out:
         log(f'Left out {len(left_out)} group chats with people who are not on the list. To include one, add its name or id under '
             '"Group chats to include" on the CRM page\'s About view:')
     for g in left_out:
-        log(f'  {g["id"]}: {repr(g["title"]) if g["title"] else "no name"}, {g["members"]} members besides you, '
+        log(f'  {g["id"]}: {g.get("service") or "Messages"}, {repr(g["title"]) if g["title"] else "no name"}, {g["members"]} members besides you, '
             f'listed: {", ".join(g["listed"])}')
     if suggested:
         log(f'Suggested for the text list: {len(suggested)} people in the CRM you have texted since {SINCE.date().isoformat()}.')
