@@ -71,6 +71,25 @@ if [ -d "$DOTFILES_DIR/claude/output-styles" ]; then
   done
 fi
 
+# --- Symlink Claude Code rules ---
+# ~/.claude/rules/*.md load in every project. A rules file is enough for a
+# short fact, such as my time zone. The writing rules need the output style
+# above instead. Symlinked, not copied, so `git pull` updates them.
+if [ -d "$DOTFILES_DIR/claude/rules" ]; then
+  echo "==> Linking Claude Code rules..."
+  mkdir -p "$HOME/.claude/rules"
+  for rule in "$DOTFILES_DIR"/claude/rules/*.md; do
+    [ -f "$rule" ] || continue
+    target="$HOME/.claude/rules/$(basename "$rule")"
+    if [ -f "$target" ] && [ ! -L "$target" ]; then
+      echo "    Backing up $target -> ${target}.backup"
+      mv "$target" "${target}.backup"
+    fi
+    ln -sf "$rule" "$target"
+    echo "    Linked $target -> $rule"
+  done
+fi
+
 # --- Link picnic skills (Mac only) ---
 # Coder workspaces link ~/picnic/skills through picnic's own setup. The Mac has
 # no such step, so link each skill into ~/.claude/skills here. zshrc re-runs
