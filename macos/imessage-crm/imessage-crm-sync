@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 """Send Troy's texts with the people on the lab CRM's text list to his Coder workspace.
 
-Runs on the Mac every hour, from the LaunchAgent com.user.imessage-crm-sync. Each run:
-1. reads the text list over SSH, from the file the CRM's daily refresh writes in the workspace;
-2. finds each listed person's phone numbers and email addresses: the ones the list gives, and
-   the ones on the Contacts card whose name matches;
-3. reads every iMessage and SMS conversation with those people since SINCE from the Messages database,
-   and every WhatsApp conversation with them from the WhatsApp desktop app's database, when the app is installed;
-4. sends the conversations to the workspace as one JSON file, which the next refresh reads.
+Two LaunchAgents on the Mac run this script as two jobs:
+
+- read (com.user.imessage-crm-read), every hour, with Full Disk Access. It runs from a root-owned copy of
+  this file, which install-reader.sh installs, through a launcher that runs nothing else. Each run:
+  1. reads the text list from ALLOWLIST;
+  2. finds each listed person's phone numbers and email addresses: the ones the list gives, and
+     the ones on the Contacts card whose name matches;
+  3. reads every iMessage and SMS conversation with those people since SINCE from the Messages database,
+     and every WhatsApp conversation with them from the WhatsApp desktop app's database, when the app is installed;
+  4. writes the conversations to EXPORT, as one JSON file.
+- transfer (com.user.imessage-crm-sync), every hour and whenever EXPORT changes, without Full Disk Access.
+  It sends EXPORT to the workspace, where the next refresh reads it, and copies the text list the refresh
+  writes there to ALLOWLIST. Only this job runs ssh. ssh runs the commands ~/.ssh/config names, which any
+  code running as Troy can change, so they must not inherit the reader's Full Disk Access.
 
 Only conversations that include someone on the list leave the Mac. A group chat leaves only when
 everyone in it is on the list or one of the Picnic people the list names, or when the list names
 the group itself. The file names people without giving their phone numbers or email addresses.
+A group chat left out goes by its id and number of members. Anyone in it can choose its name, so
+the name stays in the log.
 
 The run also suggests CRM people to add to the list: those it finds in Contacts with texts since
 SINCE. For them it sends only counts and the date of the last text, never what was said.
 
-Reading the Messages, Contacts and WhatsApp databases needs Full Disk Access; README.md says how to grant it.
+README.md says how to install both jobs and grant the reader Full Disk Access.
 
 Written for the Python 3.9 that /usr/bin/python3 runs, with the standard library only.
 """
@@ -28,6 +37,11 @@ HOME = os.path.expanduser('~')
 HOST_FILE = os.path.join(HOME, '.config', 'imessage-crm', 'host')
 DEFAULT_HOST = 'coder.troy-workspace'
 REMOTE_DIR = '/home/coder/lab-crm-texts'
+CACHE = os.path.join(HOME, '.cache', 'imessage-crm')
+ALLOWLIST = os.path.join(CACHE, 'allowlist.json')  # the transfer job's copy of the text list
+EXPORT = os.path.join(CACHE, 'out', 'texts.json')  # the reader's export; the transfer job's LaunchAgent watches its folder
+PUSHED = os.path.join(CACHE, 'pushed')  # its time is the time of the export the transfer job last sent
+READER = '/usr/local/libexec/imessage-crm/imessage-crm-read'  # the launcher install-reader.sh builds
 SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)  # the CRM's history starts here
 MESSAGES_DB = os.path.join(HOME, 'Library', 'Messages', 'chat.db')
 CONTACTS_DIR = os.path.join(HOME, 'Library', 'Application Support', 'AddressBook')
@@ -68,10 +82,8 @@ def open_db(path):
         con.execute('SELECT 1 FROM sqlite_master LIMIT 1')
         return con
     except sqlite3.DatabaseError as e:  # macOS refuses a protected folder with OperationalError or "authorization denied"
-        app = os.path.join(sys.base_prefix, 'Resources', 'Python.app')
-        raise SystemExit(f"Can't read {path} ({e}). This needs Full Disk Access for /usr/bin/python3 and for {app}, "
-                         f'and if those are not enough, for {os.path.realpath(sys.executable)}: '
-                         'System Settings > Privacy & Security > Full Disk Access. See README.md.')
+        raise SystemExit(f"Can't read {path} ({e}). The reader needs Full Disk Access for {READER}, and launchd must start it "
+                         '(launchctl kickstart, not a terminal): System Settings > Privacy & Security > Full Disk Access. See README.md.')
 
 
 def norm(s):
@@ -462,13 +474,21 @@ def conversations(owner, names, picnic, named_groups):
     return sorted(out, key=lambda c: c['id']), sorted(left_out.values(), key=lambda g: g['id']), empty
 
 
-def main():
-    host = open(HOST_FILE).read().strip() if os.path.exists(HOST_FILE) else DEFAULT_HOST
-    raw = ssh(host, f'cat {REMOTE_DIR}/allowlist.json 2>/dev/null || true')
-    if not raw.strip():
-        log(f'No text list at {host}:{REMOTE_DIR}/allowlist.json yet. The CRM refresh writes it.')
+def write_file(path, data):
+    """Write bytes to path in one step: a reader sees the old file or the new one, never half of one.
+    The part file sits in CACHE, outside the folder the transfer job watches, so only the final move wakes it."""
+    part = os.path.join(CACHE, os.path.basename(path) + '.part')
+    with open(part, 'wb') as f:
+        f.write(data)
+    os.replace(part, path)
+
+
+def read():
+    if not os.path.exists(ALLOWLIST):
+        log(f'No text list at {ALLOWLIST} yet. The transfer job copies it from the workspace.')
         return
-    allow = json.loads(raw)
+    with open(ALLOWLIST, encoding='utf-8') as f:
+        allow = json.load(f)
     cards = contacts()
     owner, names, report = resolve(allow['entries'], cards)
     picnic, notes = set(), []
@@ -504,11 +524,14 @@ def main():
     for r in report:
         mine = [c for c in convs if r['id'] in c['entries']]
         r['conversations'], r['messages'] = len(mine), sum(len(c['messages']) for c in mine)
+    # A left-out chat goes without its name: anyone in it, a stranger too, can choose the name, and the
+    # CRM's agents read this file. The log below keeps the name for Troy.
     out = {'version': VERSION, 'exportedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'since': SINCE.date().isoformat(),
-           'entries': report, 'notes': notes, 'leftOut': left_out, 'suggestions': suggested, 'conversations': convs}
-    ssh(host, f'mkdir -p {REMOTE_DIR} && cat > {REMOTE_DIR}/texts.json.part && mv {REMOTE_DIR}/texts.json.part {REMOTE_DIR}/texts.json',
-        json.dumps(out, ensure_ascii=False).encode())
-    log(f'Sent {len(convs)} conversations, {sum(len(c["messages"]) for c in convs)} messages, for {len(report)} people to {host}. '
+           'entries': report, 'notes': notes, 'leftOut': [{k: v for k, v in g.items() if k != 'title'} for g in left_out],
+           'suggestions': suggested, 'conversations': convs}
+    os.makedirs(os.path.dirname(EXPORT), exist_ok=True)
+    write_file(EXPORT, json.dumps(out, ensure_ascii=False).encode())
+    log(f'Read {len(convs)} conversations, {sum(len(c["messages"]) for c in convs)} messages, for {len(report)} people into {EXPORT}. '
         f'{empty} messages had no text or attachment and were left out.')
     for r in report:
         log(f'  {r["name"]}: numbers and addresses {r["handles"]}, conversations {r["conversations"]}, messages {r["messages"]}'
@@ -536,5 +559,40 @@ def main():
             + (f' (Contacts card "{f["contactsName"]}")' if f['contactsName'] else ''))
 
 
+def transfer():
+    host = open(HOST_FILE).read().strip() if os.path.exists(HOST_FILE) else DEFAULT_HOST
+    os.makedirs(CACHE, exist_ok=True)
+    # Send the reader's export when it is newer than the one last sent.
+    if os.path.exists(EXPORT):
+        made = os.stat(EXPORT).st_mtime_ns
+        if not os.path.exists(PUSHED) or made > os.stat(PUSHED).st_mtime_ns:
+            with open(EXPORT, 'rb') as f:
+                data = f.read()
+            ssh(host, f'mkdir -p {REMOTE_DIR} && cat > {REMOTE_DIR}/texts.json.part && mv {REMOTE_DIR}/texts.json.part {REMOTE_DIR}/texts.json', data)
+            open(PUSHED, 'w').close()
+            os.utime(PUSHED, ns=(made, made))
+            log(f'Sent the reader\'s export of {datetime.fromtimestamp(made / 1e9).strftime("%Y-%m-%d %H:%M")} to {host}.')
+    # Then copy the text list for the reader's next run.
+    raw = ssh(host, f'cat {REMOTE_DIR}/allowlist.json 2>/dev/null || true')
+    if not raw.strip():
+        if os.path.exists(ALLOWLIST):
+            os.remove(ALLOWLIST)
+        log(f'No text list at {host}:{REMOTE_DIR}/allowlist.json yet. The CRM refresh writes it.')
+        return
+    try:
+        json.loads(raw)
+    except ValueError as e:  # keep the copy the reader has rather than replace it with a broken one
+        raise SystemExit(f'The text list at {host}:{REMOTE_DIR}/allowlist.json is not JSON ({e}), so the reader keeps its copy.')
+    if not os.path.exists(ALLOWLIST) or open(ALLOWLIST, 'rb').read() != raw:
+        write_file(ALLOWLIST, raw)
+        log(f'Copied the text list from {host} for the reader.')
+
+
+JOBS = {'read': read, 'transfer': transfer}
+
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) != 2 or sys.argv[1] not in JOBS:
+        raise SystemExit(f'usage: {os.path.basename(sys.argv[0])} read|transfer\n'
+                         '  read      read Messages, Contacts and WhatsApp into the export (needs Full Disk Access)\n'
+                         '  transfer  send the export to the workspace and copy the text list back (runs ssh)')
+    JOBS[sys.argv[1]]()
