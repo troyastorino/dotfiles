@@ -8,6 +8,7 @@
   <array>
     <string>/usr/bin/python3</string>
     <string>__HOME__/.local/bin/imessage-crm-sync</string>
+    <string>transfer</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -16,6 +17,10 @@
   </dict>
   <key>StartInterval</key>
   <integer>3600</integer>
+  <key>WatchPaths</key>
+  <array>
+    <string>__HOME__/.cache/imessage-crm/out</string>
+  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>ProcessType</key>
