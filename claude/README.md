@@ -6,12 +6,16 @@ files work differently.
 | What | Where it goes | How |
 |---|---|---|
 | `output-styles/*.md` | `~/.claude/output-styles/` | Symlink, so `git pull` updates them |
+| `rules/*.md` | `~/.claude/rules/` | Symlink, so `git pull` updates them |
 | `settings.json` | `~/.claude/settings.json` | Merge, because Claude Code writes there too |
 | `~/picnic/skills/*` (Mac only) | `~/.claude/skills/` | One symlink per skill, by `link-picnic-skills.sh` |
 
 - `output-styles/writing-rules.md` tells Claude how to write when it writes as itself. It
   pairs the structure rules of ASD-STE100 (Simplified Technical English) with Orwell's six
   rules. It does not cover ghostwriting.
+- `rules/time-zone.md` says I'm on Pacific Time, that a Coder workspace clock runs on UTC,
+  and how to tell from my calendar when I'm traveling. A short fact like this works as a
+  rules file. The writing rules do not, as the section below explains.
 - `settings.json` holds user-scope settings. It sets `outputStyle` to the style above. Its
   `permissions.allow` list is a starter set of read-only git commands. Edit the list, or
   empty it. To build a real allowlist from your own transcripts, run
