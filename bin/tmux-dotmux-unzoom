@@ -1,0 +1,50 @@
+#!/bin/sh
+# Undoes the zoom that dotMux leaves on a window, so the Mac shows every pane
+# again. tmux.conf runs this in the background from hooks, and
+# tmux-dotmux-size runs it when the Mac selects a window.
+#
+# dotMux shows one pane at a time: when it attaches, it zooms the active pane
+# with resize-pane -Z. A zoom belongs to the window, so the Mac shows that one
+# pane too, and dotMux leaves the zoom on when it disconnects.
+# tmux-dotmux-size sets @dotmux-shown on each window it hands to dotMux. This
+# script undoes the zoom on a window only when the window has that mark, so a
+# zoom made on the Mac stays.
+#
+# resize-pane -Z is a toggle, and two hooks can run this for one window at the
+# same moment. The test and the toggle are one tmux command list, which the
+# server runs without other commands in between, so the second run finds the
+# mark gone and does nothing.
+#
+# Usage:
+#   tmux-dotmux-unzoom <window-id>           the Mac selected this window
+#   tmux-dotmux-unzoom <window-id> <client>  this client is now the last one
+#                                            to use the window (client-active)
+#   tmux-dotmux-unzoom                       a client detached
+
+unzoom() {
+  tmux if-shell -F -t "$1" '#{&&:#{@dotmux-shown},#{window_zoomed_flag}}' "resize-pane -Z -t $1" \; \
+    set-option -wu -t "$1" @dotmux-shown
+}
+
+window="$1"
+client="$2"
+
+if [ -z "$window" ]; then
+  # While dotMux is still attached, its zoom stays.
+  clients=$(tmux list-clients -F '#{client_control_mode}') || exit 0
+  printf '%s\n' "$clients" | grep -qx 1 && exit 0
+  tmux list-windows -a -F '#{@dotmux-shown} #{window_id}' | awk '$1 == 1 { print $2 }' | sort -u |
+    while read -r marked; do
+      unzoom "$marked"
+    done
+  exit 0
+fi
+
+if [ -n "$client" ]; then
+  # tmux-dotmux-size makes dotMux the last client to use a window, and that
+  # runs client-active for dotMux. Only a terminal client takes the window back.
+  tmux list-clients -F '#{client_control_mode} #{client_name}' | grep -Fqx "0 $client" || exit 0
+fi
+
+unzoom "$window"
+exit 0
