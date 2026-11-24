@@ -1,0 +1,90 @@
+#!/bin/sh
+# Finishes `gws auth login` on a box you reach from another machine.
+#
+# gws waits for Google's redirect on this box's own localhost. A browser on
+# another machine can't reach that address, so the sign-in ends on a page that
+# fails to load. This script asks for that page's address and delivers it to
+# gws from this box.
+#
+# Usage: gws-login-remote [options for `gws auth login`]
+#   gws-login-remote --scopes "openid,email,https://www.googleapis.com/auth/calendar.readonly"
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+  esac
+done
+
+log=$(mktemp)
+pid=
+cleanup() {
+  # The npm `gws` is a launcher that starts the real binary as a child, so
+  # stop the whole process group, not only the launcher.
+  [ -n "$pid" ] && kill -- "-$pid" 2>/dev/null
+  rm -f "$log"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# setsid gives gws its own process group, whose id is $pid.
+setsid gws auth login "$@" >"$log" 2>&1 &
+pid=$!
+
+# gws picks a free port and prints it inside the sign-in address.
+port=
+tries=0
+while [ "$tries" -lt 20 ]; do
+  port=$(grep -o 'redirect_uri=http://localhost:[0-9]*' "$log" | grep -o '[0-9]*$' | head -1)
+  [ -n "$port" ] && break
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 1
+  tries=$((tries + 1))
+done
+
+cat "$log"
+shown=$(wc -l <"$log")
+if [ -z "$port" ]; then
+  echo "gws printed no sign-in address, so there is nothing to finish." >&2
+  exit 1
+fi
+
+cat <<EOF
+
+1. Open the address above and approve the sign-in.
+2. The browser then lands on a page at localhost:$port that fails to load.
+3. Copy that page's full address from the address bar and paste it here.
+
+EOF
+printf 'Address: '
+IFS= read -r addr
+
+case "$addr" in
+  "http://localhost:$port/"* | "http://localhost:$port?"* | \
+  "http://127.0.0.1:$port/"* | "http://127.0.0.1:$port?"*) ;;
+  *)
+    echo "That address doesn't start with http://localhost:$port, so it wasn't sent." >&2
+    exit 1
+    ;;
+esac
+
+curl -s -m 30 "$addr"
+echo
+
+# With a valid code gws saves the login and exits. Without one it keeps waiting.
+waited=0
+while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 30 ]; do
+  sleep 1
+  waited=$((waited + 1))
+done
+tail -n +"$((shown + 1))" "$log"
+if kill -0 "$pid" 2>/dev/null; then
+  echo "gws is still waiting, so that address carried no usable code. Run this again." >&2
+  exit 1
+fi
+wait "$pid"
+status=$?
+pid=
+exit "$status"

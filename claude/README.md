@@ -9,6 +9,7 @@ files work differently.
 | `rules/*.md` | `~/.claude/rules/` | Symlink, so `git pull` updates them |
 | `settings.json` | `~/.claude/settings.json` | Merge, because Claude Code writes there too |
 | `~/picnic/skills/*` (Mac only) | `~/.claude/skills/` | One symlink per skill, by `link-picnic-skills.sh` |
+| `~/.claude/*` (Coder only) | `~/.claude-personal/`, `~/.claude-research/` | Symlinks, by `link-account-dirs.sh` |
 
 - `output-styles/writing-rules.md` tells Claude how to write when it writes as itself. It
   pairs the structure rules of ASD-STE100 (Simplified Technical English) with Orwell's six
@@ -46,6 +47,51 @@ such step, so `link-picnic-skills.sh` does it, for the same set:
 shell start when `~/picnic/skills` or any `SKILL.md` is newer than the script's stamp in
 `~/.cache/picnic-skills/`. A `git pull` or branch switch in `~/picnic` causes that. A
 running session picks up the new links without a restart.
+
+## More than one Claude account
+
+A Claude Code login belongs to a config directory. So each account gets its own directory,
+and a login in one account leaves the sessions of the others alone.
+
+| Command | Account | Config directory |
+|---|---|---|
+| `claude`, `claude-team` | Team | `~/.claude` |
+| `claude-personal` | Personal | `~/.claude-personal` |
+| `claude-research` | Research | `~/.claude-research` |
+
+The launchers are in `bin/`. Each one sets `CLAUDE_CONFIG_DIR` and runs `claude` with the
+arguments it got. Sign in once for each directory, with `claude-personal auth login`.
+`claude-personal auth status` prints the account that a directory holds.
+
+`link-account-dirs.sh` makes the other directories read the team directory's files:
+
+- `CLAUDE.md`, `rules`, `agents`, `commands`, `hooks`, `output-styles`, `settings.json` and
+  `keybindings.json` become links.
+- `projects` becomes a link, so the accounts share transcripts and auto memory. A
+  conversation that one account started resumes on another: `claude-research --resume <id>`.
+- Each skill in `~/.claude/skills` gets a link. The account's own `skills/synced` folder
+  stays, because Claude Code fills it per account.
+- `.claude.json` stays separate, because it holds the login. The script copies in the MCP
+  servers the account lacks.
+
+The script never replaces a file it did not make. It skips a directory that a running
+session uses. On Coder, `install.sh` runs it at every workspace start, so a new skill gets
+its link.
+
+`bin/claude-switch` moves the conversation in a tmux pane to another account. Use it when
+one account reaches its usage limit:
+
+```sh
+! claude-switch research        # typed inside the session
+claude-switch research %12      # from another pane
+```
+
+It stops the session, then starts the same conversation in the same pane and directory. A
+busy session loses the turn it is in, so the script refuses one unless you pass `--now`.
+Artifacts and claude.ai connectors belong to the first account, and they stay there.
+
+The pane snapshot leaves out a session whose config directory is not the default. A
+workspace restart therefore does not bring that session back. Resume it by hand.
 
 ## Why an output style, and not `~/.claude/rules/`
 

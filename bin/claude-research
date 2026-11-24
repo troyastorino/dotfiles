@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs Claude Code on the research Claude account.
+#
+# Each Claude account has its own config directory, so a login in one account
+# never moves the sessions of another. The team account keeps the default
+# directory (~/.claude), where the scheduled jobs run.
+#
+# First use: claude-research auth login --email <research address>
+CLAUDE_CONFIG_DIR="$HOME/.claude-research" exec claude "$@"
