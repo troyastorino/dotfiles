@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs Claude Code on the team Claude account.
+#
+# The team account keeps the default config directory (~/.claude), so this
+# clears any CLAUDE_CONFIG_DIR the calling shell carries. The scheduled jobs
+# run on this account. Don't run /login in a team session: it changes the
+# login of every session in the directory.
+unset CLAUDE_CONFIG_DIR
+exec claude "$@"

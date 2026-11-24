@@ -242,4 +242,24 @@ if [ -n "${CODER:-}" ] && [ -x "$lab_crm" ]; then
   (cd "$HOME" && setsid nohup bash -lc '"$1" start' _ "$lab_crm" >/dev/null 2>&1 < /dev/null &)
 fi
 
+# --- Share Claude Code practices with the other Claude accounts (Coder only) ---
+# bin/claude-personal and bin/claude-research each use their own config directory, because
+# a login belongs to a directory. link-account-dirs.sh links the team directory's rules,
+# hooks, settings, skills and transcripts into them. Run here so a skill added since the
+# last start gets its link. It skips a directory that doesn't exist or that a session uses.
+if [ -n "${CODER:-}" ] && [ -x "$DOTFILES_DIR/claude/link-account-dirs.sh" ]; then
+  echo "==> Linking Claude Code practices into the other account directories..."
+  "$DOTFILES_DIR/claude/link-account-dirs.sh" || echo "    Linking failed; run claude/link-account-dirs.sh by hand"
+fi
+
+# --- Start the coordinator's watcher (Coder only) ---
+# ~/coordinator/bin/watcher is a background loop that lives outside this repo. A workspace
+# restart kills the loop, so start it again here; `start` does nothing when a loop already
+# runs. Backgrounded, because Coder blocks logins until this script ends.
+coordinator_watcher="$HOME/coordinator/bin/watcher"
+if [ -n "${CODER:-}" ] && [ -x "$coordinator_watcher" ]; then
+  echo "==> Starting the coordinator's watcher..."
+  (cd "$HOME" && setsid nohup bash -lc '"$1" start' _ "$coordinator_watcher" >/dev/null 2>&1 < /dev/null &)
+fi
+
 echo "==> Dotfiles setup complete!"
